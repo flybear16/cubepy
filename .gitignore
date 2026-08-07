@@ -14,3 +14,6 @@ htmlcov/
 
 # Env
 .env
+
+# oh-my-claudecode orchestration state (local only, not CubePy source).
+.omc/
