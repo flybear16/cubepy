@@ -84,6 +84,7 @@ CUBEPY_TEST_PG_DSN=... uv run pytest  # use a real/local Postgres instead of a c
 - [04 - Cube.js 订阅机制](docs/04-cube-订阅机制.md)
 - [05 - Py 重写架构建议](docs/05-cube-py重写架构建议.md)
 - [06 - Cube.js Contract Notes (porting reference)](docs/06-cubejs-contract-notes.md)
+- [07 - 预聚合方案调研](docs/07-预聚合方案调研.md)
 
 ## License
 
