@@ -62,6 +62,8 @@ def measure(
     description: str | None = None,
     filters: tuple[dict[str, Any], ...] = (),
     formula: str | None = None,
+    format: str | None = None,
+    drill_members: tuple[str, ...] = (),
 ) -> Measure:
     """Define a measure. ``name`` is filled in from the class attribute by ``@cube``.
 
@@ -78,6 +80,8 @@ def measure(
         description=description,
         filters=filters,
         formula=formula,
+        format=format,
+        drill_members=drill_members,
     )
 
 
@@ -89,6 +93,8 @@ def dimension(
     primary_key: bool = False,
     title: str | None = None,
     description: str | None = None,
+    format: str | None = None,
+    drill_members: tuple[str, ...] = (),
 ) -> Dimension:
     dtype_v = dtype if isinstance(dtype, DimensionType) else DimensionType(dtype)
     return Dimension(
@@ -99,6 +105,8 @@ def dimension(
         primary_key=primary_key,
         title=title,
         description=description,
+        format=format,
+        drill_members=drill_members,
     )
 
 
@@ -175,6 +183,8 @@ def _cube_from_dict(d: dict[str, Any]) -> CubeMeta:
             type=MeasureType(m["type"]),
             title=m.get("title"),
             description=m.get("description"),
+            format=m.get("format"),
+            drill_members=tuple(m.get("drillMembers") or ()),
         )
         for m in (d.get("measures") or [])
     )
@@ -186,6 +196,8 @@ def _cube_from_dict(d: dict[str, Any]) -> CubeMeta:
             primary_key=dd.get("primaryKey", False),
             title=dd.get("title"),
             description=dd.get("description"),
+            format=dd.get("format"),
+            drill_members=tuple(dd.get("drillMembers") or ()),
         )
         for dd in (d.get("dimensions") or [])
     )

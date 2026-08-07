@@ -33,12 +33,25 @@ def _orders_users() -> Iterator[None]:
         count = measure(None, MeasureType.COUNT)
         uniq = measure("user_id", MeasureType.COUNT_DISTINCT)
         avg = measure(None, MeasureType.CALCULATED, formula="{revenue} / NULLIF({count}, 0)")
+        cumulative = measure("revenue", MeasureType.RUNNING_TOTAL)
+        amount_avg = measure("amount", MeasureType.AVG)
+        amount_min = measure("amount", MeasureType.MIN)
+        amount_max = measure("amount", MeasureType.MAX)
+        approx_users = measure("user_id", MeasureType.COUNT_DISTINCT_APPROX)
+        filtered_revenue = measure(
+            "amount", MeasureType.SUM,
+            filters=({"member": "Orders.status", "operator": "equals", "values": ["shipped"]},),
+        )
         status = dimension("status", "string")
         created_at = dimension("created_at", "time")
 
     @cube("Users", "users")
     class _U:
         country = dimension("country", "string")
+
+    @cube("Products", "products")
+    class _P:
+        name = dimension("name", "string")
 
     yield
     registry.clear()
@@ -192,6 +205,43 @@ def test_unknown_operator_raises() -> None:
         )
 
 
+def test_filters_remaining_operators() -> None:
+    sql = _sql(
+        {
+            "measures": ["Orders.revenue"],
+            "filters": [
+                {"member": "Orders.status", "operator": "notEquals", "values": ["shipped"]},
+                {"member": "Orders.status", "operator": "notIn", "values": ["a", "b"]},
+                {"member": "Orders.status", "operator": "notContains", "values": ["hip"]},
+                {"member": "Orders.status", "operator": "startsWith", "values": ["sh"]},
+                {"member": "Orders.status", "operator": "endsWith", "values": ["ed"]},
+                {"member": "Orders.status", "operator": "notSet"},
+                {"member": "Orders.created_at", "operator": "beforeDate", "values": ["2026-08-03"]},
+                {"member": "Orders.created_at", "operator": "afterDate", "values": ["2026-08-01"]},
+                {
+                    "member": "Orders.created_at",
+                    "operator": "inDateRange",
+                    "values": ["2026-08-01", "2026-08-05"],
+                },
+                {
+                    "member": "Orders.created_at",
+                    "operator": "notInDateRange",
+                    "values": ["2026-08-01", "2026-08-05"],
+                },
+            ],
+        }
+    )
+    assert "status <> 'shipped'" in sql
+    assert "status NOT IN ('a', 'b')" in sql
+    assert "status NOT LIKE '%hip%'" in sql
+    assert "status LIKE 'sh%'" in sql
+    assert "status LIKE '%ed'" in sql
+    assert "status IS NULL" in sql
+    assert "created_at <" in sql and "created_at >" in sql  # beforeDate / afterDate
+    assert "created_at >=" in sql and "created_at <=" in sql  # inDateRange
+    assert " OR " in sql  # notInDateRange
+
+
 def test_calculated_measure_inlines_refs() -> None:
     sql = _sql({"measures": ["Orders.avg"]})
     assert "(sum(amount)) / NULLIF((count(*)), 0)" in sql
@@ -207,3 +257,66 @@ def test_calculated_measure_unknown_ref_raises() -> None:
 
     with pytest.raises(ValueError):
         _sql({"measures": ["Orders.bad"]})
+
+
+def test_window_measure_wraps_in_subquery() -> None:
+    sql = _sql(
+        {
+            "measures": ["Orders.cumulative"],
+            "timeDimensions": [
+                {"dimension": "Orders.created_at", "granularity": "day"}
+            ],
+        }
+    )
+    assert 'sum(sub."Orders.revenue") OVER (ORDER BY sub."Orders.created_at")' in sql
+    assert 'AS "Orders.cumulative"' in sql
+    assert "FROM (" in sql and ") sub" in sql
+
+
+def test_window_measure_without_ordering_raises() -> None:
+    with pytest.raises(ValueError):
+        _sql({"measures": ["Orders.cumulative"]})
+
+
+def test_aggregate_measure_types_execute_on_sqlite() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "CREATE TABLE orders (id INTEGER, amount REAL, user_id INTEGER, "
+            "tenant_id INTEGER, status TEXT, created_at TEXT)"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO orders (id, amount, user_id, tenant_id, status) VALUES "
+            "(1, 10, 1, 42, 'shipped'), (2, 30, 2, 42, 'shipped'), (3, 5, 1, 42, 'pending')"
+        )
+    stmt = SQLBuilder(
+        Query.parse(
+            {
+                "measures": ["Orders.amount_avg", "Orders.amount_min", "Orders.amount_max", "Orders.uniq"],
+            }
+        ),
+        _ctx(),
+        now=NOW,
+    ).build()
+    with engine.connect() as conn:
+        row = dict(conn.execute(stmt).mappings().all()[0])
+    assert row["Orders.amount_avg"] == 15.0  # (10 + 30 + 5) / 3
+    assert row["Orders.amount_min"] == 5.0
+    assert row["Orders.amount_max"] == 30.0
+    assert row["Orders.uniq"] == 2  # distinct user_id
+
+
+def test_count_distinct_approx_sql_shape() -> None:
+    sql = _sql({"measures": ["Orders.approx_users"]})
+    assert "hll_cardinality(hll_add_agg(hll_hash_any(user_id)))" in sql
+
+
+def test_filtered_measure_uses_case_when() -> None:
+    sql = _sql({"measures": ["Orders.filtered_revenue"]})
+    assert "sum(CASE WHEN status = 'shipped' THEN amount ELSE 0 END)" in sql
+
+
+def test_unjoined_cube_raises() -> None:
+    # Products is not joined to Orders in the fixture.
+    with pytest.raises(ValueError, match="not joined"):
+        _sql({"measures": ["Orders.revenue"], "dimensions": ["Products.name"]})

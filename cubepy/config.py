@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     # Auth
     jwt_secret: str = "dev-secret-change-me"
     jwt_algorithm: str = "HS256"
+    # PEM public key for RS256 verification (required when jwt_algorithm == "RS256").
+    jwt_public_key: str | None = None
 
     # Data sources. Hologres speaks the Postgres wire protocol -> asyncpg driver.
     pg_dsn: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/cubepy"

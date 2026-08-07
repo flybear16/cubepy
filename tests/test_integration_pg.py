@@ -114,6 +114,28 @@ async def test_load_calculated_measure(client: tuple[AsyncClient, QueryOrchestra
     assert by_status["pending"]["Orders.avg_order_value"] == 5.0  # 5 / 1
 
 
+async def test_load_window_measure_cumulative(client: tuple[AsyncClient, QueryOrchestrator]) -> None:
+    ac, _ = client
+    by_day = await _rows_by(
+        ac,
+        "Orders.created_at",
+        {
+            "measures": ["Orders.cumulative_revenue"],
+            "timeDimensions": [
+                {
+                    "dimension": "Orders.created_at",
+                    "granularity": "day",
+                    "dateRange": ["2026-08-01", "2026-08-03"],
+                }
+            ],
+            "order": [["Orders.created_at", "asc"]],
+        },
+    )
+    # tenant 42 daily revenue: 08-01=10, 08-02=30, 08-03=5 -> cumulative 10, 40, 45
+    rows = sorted(by_day.values(), key=lambda r: r["Orders.created_at"])
+    assert [r["Orders.cumulative_revenue"] for r in rows] == [10.0, 40.0, 45.0]
+
+
 async def test_rls_excludes_other_tenant(client: tuple[AsyncClient, QueryOrchestrator]) -> None:
     ac, _ = client
     by_status = await _rows_by(

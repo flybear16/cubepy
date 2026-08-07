@@ -126,3 +126,43 @@ def test_duplicate_name_overwrites() -> None:
         count = measure(None, MeasureType.COUNT)
 
     assert registry.get("Orders").sql == "SELECT * FROM orders2"
+
+
+def test_resolve_member_all_kinds() -> None:
+    from cubepy.schema.registry import resolve_member
+
+    registry.clear()
+
+    @cube("Orders", "orders")
+    class _O:
+        c = measure(None, MeasureType.COUNT)
+        status = dimension("status", "string")
+        active = segment("status = 'active'")
+
+    assert resolve_member("Orders.c")[1] == "measure"
+    assert resolve_member("Orders.status")[1] == "dimension"
+    assert resolve_member("Orders.active")[1] == "segment"
+    with pytest.raises(KeyError):
+        resolve_member("Orders.nope")
+
+
+def test_yaml_bad_join_spec_raises(tmp_path) -> None:
+    f = tmp_path / "c.yaml"
+    f.write_text(
+        "cubes:\n  - name: Orders\n    sql: orders\n    joins:\n        Users: 123\n"
+        "    measures: [{name: c, type: count}]"
+    )
+    with pytest.raises(TypeError):
+        load_cube_file(f)
+
+
+def test_load_cube_dir_counts_files(tmp_path) -> None:
+    from cubepy.schema.loader import load_cube_dir
+
+    (tmp_path / "a.yaml").write_text(
+        "cubes:\n  - {name: A, sql: a, measures: [{name: c, type: count}]}"
+    )
+    (tmp_path / "b.yml").write_text(
+        "cubes:\n  - {name: B, sql: b, measures: [{name: c, type: count}]}"
+    )
+    assert load_cube_dir(tmp_path) == 2

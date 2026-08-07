@@ -172,3 +172,24 @@ async def test_concurrent_identical_queries_dedup_to_one_execution() -> None:
     results = await asyncio.gather(*(orch.load(query, ctx) for _ in range(5)))
     assert orch.executor.calls == 1  # type: ignore[attr-defined]
     assert all(r == results[0] for r in results)
+
+
+async def test_load_with_only_time_dimension() -> None:
+    # Exercises _primary_cube_name's timeDimensions branch (no measures/dims).
+    registry.clear()
+
+    @cube("Orders", "orders")
+    class _O:
+        revenue = measure("amount", MeasureType.SUM)
+        created_at = dimension("created_at", "time")
+
+    orch = QueryOrchestrator(
+        RedisCache(fakeredis.FakeAsyncRedis()),
+        FakeExecutor([{"Orders.created_at": "2026-08-01T00:00:00"}]),
+        settings=settings,
+    )
+    env = await orch.load(
+        Query.parse({"timeDimensions": [{"dimension": "Orders.created_at", "granularity": "day"}]}),
+        _ctx(),
+    )
+    assert env["data"] == [{"Orders.created_at": "2026-08-01T00:00:00"}]

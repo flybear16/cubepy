@@ -390,6 +390,7 @@ dependencies = [
     { name = "sqlalchemy" },
     { name = "strawberry-graphql", extra = ["asgi"] },
     { name = "uvicorn", extra = ["standard"] },
+    { name = "websockets" },
 ]
 
 [package.optional-dependencies]
@@ -423,6 +424,7 @@ requires-dist = [
     { name = "strawberry-graphql", extras = ["asgi"], specifier = ">=0.230" },
     { name = "testcontainers", extras = ["postgres"], marker = "extra == 'dev'", specifier = ">=4.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.29" },
+    { name = "websockets", specifier = ">=12" },
 ]
 provides-extras = ["dev"]
 

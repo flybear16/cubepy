@@ -119,3 +119,52 @@ def test_ws_pushes_only_on_change() -> None:
             second = ws.receive_json()
     assert first["data"] == [{"Orders.revenue": 1}]
     assert second["data"] == [{"Orders.revenue": 2}]
+
+
+def test_ws_bad_query_sends_error() -> None:
+    app = _app(_FixedExecutor([{"Orders.revenue": 1}]))
+    with TestClient(app) as client:
+        with client.websocket_connect("/cubejs-api/v1/subscribe") as ws:
+            ws.send_json({"authorization": f"Bearer {_token()}"})
+            ws.send_json(
+                {
+                    "method": "subscribe",
+                    "messageId": "1",
+                    "params": {"query": {"measures": ["Orders.nonexistent"]}},
+                }
+            )
+            msg = ws.receive_json()
+    assert msg["type"] == "error"
+    assert "nonexistent" in msg["error"]
+
+
+def test_ws_unsubscribe_then_resubscribe() -> None:
+    app = _app(_FixedExecutor([{"Orders.revenue": 1}]))
+    with TestClient(app) as client:
+        with client.websocket_connect("/cubejs-api/v1/subscribe") as ws:
+            ws.send_json({"authorization": f"Bearer {_token()}"})
+            ws.send_json(
+                {
+                    "method": "subscribe",
+                    "messageId": "1",
+                    "params": {
+                        "query": {"measures": ["Orders.revenue"]},
+                        "refreshKey": {"every": 0.05},
+                    },
+                }
+            )
+            first = ws.receive_json()
+            ws.send_json({"method": "unsubscribe", "messageId": "1"})
+            ws.send_json(
+                {
+                    "method": "subscribe",
+                    "messageId": "2",
+                    "params": {
+                        "query": {"measures": ["Orders.revenue"]},
+                        "refreshKey": {"every": 0.05},
+                    },
+                }
+            )
+            second = ws.receive_json()
+    assert first["messageId"] == "1"
+    assert second["messageId"] == "2"

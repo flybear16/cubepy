@@ -9,7 +9,8 @@ async def test_readyz() -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         r = await ac.get("/readyz")
     assert r.status_code == 200
-    assert r.json() == {"status": "ok"}
+    assert r.json()["status"] == "ok"
+    assert set(r.json()["components"]) == {"db", "redis"}
 
 
 def test_subpackages_import() -> None:

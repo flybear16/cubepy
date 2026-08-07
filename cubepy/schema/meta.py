@@ -28,6 +28,12 @@ class MeasureType(StrEnum):
     MIN = "min"
     MAX = "max"
     CALCULATED = "calculated"
+    # Window measures (G016): the builder wraps the grouped query and applies
+    # the function OVER the dimension/time order. ``sql`` names a sibling measure.
+    RUNNING_TOTAL = "runningTotal"
+    RUNNING_SUM = "runningSum"
+    RANK = "rank"
+    ROW_NUMBER = "rowNumber"
 
 
 class DimensionType(StrEnum):
@@ -60,6 +66,10 @@ class Measure:
     # Formula for a calculated measure, referencing sibling measures as {name}.
     # The SQL generator inlines each {name} with that measure's aggregate SQL.
     formula: str | None = None
+    # Display format hint (e.g. "currency", "percent") and drillable members;
+    # surfaced in /meta for clients, not used by the SQL generator.
+    format: str | None = None
+    drill_members: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -71,6 +81,8 @@ class Dimension:
     primary_key: bool = False
     title: str | None = None
     description: str | None = None
+    format: str | None = None
+    drill_members: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

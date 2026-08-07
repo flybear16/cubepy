@@ -33,7 +33,9 @@ def _orders() -> Iterator[None]:
 
     @cube("Orders", "orders")
     class _O:
-        revenue = measure("amount", MeasureType.SUM)
+        revenue = measure(
+            "amount", MeasureType.SUM, format="currency", drill_members=("Orders.status",)
+        )
         count = measure(None, MeasureType.COUNT)
         secret = measure("amount", MeasureType.SUM, shown=lambda ctx: ctx.role == "admin")
         status = dimension("status", "string")
@@ -59,7 +61,36 @@ async def test_readyz_open() -> None:
     async with _client([]) as ac:
         r = await ac.get("/readyz")
     assert r.status_code == 200
-    assert r.json() == {"status": "ok"}
+    assert r.json() == {
+        "status": "ok",
+        "components": {"db": "unknown", "redis": "unknown"},
+    }
+
+
+async def test_readyz_reports_down_components() -> None:
+    import redis.asyncio as redis_asyncio
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    orch = QueryOrchestrator(
+        RedisCache(fakeredis.FakeAsyncRedis()), _FakeExecutor([]), settings=settings
+    )
+    app = create_app(orchestrator=orch)
+    app.state.engine = create_async_engine(
+        "postgresql+asyncpg://u:p@127.0.0.1:39999/x", connect_args={"timeout": 1}
+    )
+    app.state.redis = redis_asyncio.from_url(
+        "redis://127.0.0.1:39999/0", socket_connect_timeout=1, socket_timeout=1
+    )
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            r = await ac.get("/readyz")
+        assert r.status_code == 503
+        body = r.json()
+        assert body["status"] == "degraded"
+        assert body["components"] == {"db": "down", "redis": "down"}
+    finally:
+        await app.state.engine.dispose()
+        await app.state.redis.aclose()
 
 
 async def test_load_requires_auth() -> None:
@@ -80,6 +111,66 @@ async def test_load_returns_envelope() -> None:
     assert body["annotation"]["measures"]["Orders.revenue"]["type"] == "sum"
     assert body["usedPreAggregations"] == []
     assert "lastRefreshTime" in body
+
+
+class _ChangingExecutor:
+    """Returns revenue 1.0 on the first call, 2.0 on every call after."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def execute(self, stmt: TextClause) -> list[dict]:
+        self.calls += 1
+        return [{"Orders.revenue": 1.0}] if self.calls == 1 else [{"Orders.revenue": 2.0}]
+
+
+async def test_sql_bad_query_returns_400() -> None:
+    async with _client([]) as ac:
+        r = await ac.post(
+            "/cubejs-api/v1/sql",
+            headers=_auth(),
+            json={"query": {"measures": ["Orders.nonexistent"]}},
+        )
+    assert r.status_code == 400
+
+
+async def test_subscribe_bad_query_returns_400() -> None:
+    async with _client([]) as ac:
+        r = await ac.post(
+            "/cubejs-api/v1/subscribe",
+            headers=_auth(),
+            json={"query": {"measures": ["Orders.nonexistent"]}},
+        )
+    assert r.status_code == 400
+
+
+async def test_compare_date_range_missing_returns_400() -> None:
+    async with _client([]) as ac:
+        r = await ac.post(
+            "/cubejs-api/v1/load",
+            headers=_auth(),
+            json={"queryType": "compareDateRange", "query": {"measures": ["Orders.revenue"]}},
+        )
+    assert r.status_code == 400
+
+
+async def test_http_subscribe_returns_on_change() -> None:
+    orch = QueryOrchestrator(
+        RedisCache(fakeredis.FakeAsyncRedis()), _ChangingExecutor(), settings=settings
+    )
+    app = create_app(orchestrator=orch)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        r = await ac.post(
+            "/cubejs-api/v1/subscribe",
+            headers=_auth(),
+            json={
+                "query": {"measures": ["Orders.revenue"]},
+                "refreshKey": {"every": 0.01},
+                "timeout": 3,
+            },
+        )
+    assert r.status_code == 200, r.text
+    assert r.json()["data"] == [{"Orders.revenue": 2.0}]  # changed value surfaces
 
 
 async def test_load_multi() -> None:
@@ -117,9 +208,14 @@ async def test_meta_lists_visible_members() -> None:
     assert r.status_code == 200
     cubes = {c["name"]: c for c in r.json()["cubes"]}
     assert "Orders" in cubes
-    names = {m["name"] for m in cubes["Orders"]["measures"]}
-    assert "revenue" in names
-    assert "secret" not in names  # viewer cannot see the admin-only measure
+    measures = {m["name"]: m for m in cubes["Orders"]["measures"]}
+    assert "revenue" in measures
+    assert "secret" not in measures  # viewer cannot see the admin-only measure
+    # format + drillMembers surfaced when defined; absent otherwise.
+    assert measures["revenue"]["format"] == "currency"
+    assert measures["revenue"]["drillMembers"] == ["Orders.status"]
+    assert "format" not in measures["count"]
+    assert "drillMembers" not in measures["count"]
 
 
 async def test_hidden_member_returns_400() -> None:

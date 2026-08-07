@@ -205,35 +205,140 @@ class SQLBuilder:
             values = [start]
         return op(values, col, self._params.bind)
 
-    def _render(self) -> str:
-        select_items: list[str] = []
-        group_items: list[str] = []
+    _WINDOW_TYPES = {
+        MeasureType.RUNNING_TOTAL,
+        MeasureType.RUNNING_SUM,
+        MeasureType.RANK,
+        MeasureType.ROW_NUMBER,
+    }
 
+    def _window_specs(self) -> list[tuple[str, MeasureType, str]]:
+        """Resolved window measures: (path, type, referenced_measure_path)."""
+        specs: list[tuple[str, MeasureType, str]] = []
         for path in self.query.measures:
             cube, _kind, member = self._resolve_member(path)
-            self._ensure_visible("measure", member)
-            if member.type == MeasureType.CALCULATED:
-                expr = self._calculated_sql(cube, member)
-            else:
-                expr = self._measure_sql(member)
-            select_items.append(f'{expr} AS "{path}"')
+            if member.type in self._WINDOW_TYPES:
+                self._ensure_visible("measure", member)
+                ref_name = member.sql
+                if not ref_name:
+                    raise ValueError(
+                        f"window measure {member.name!r} must reference a sibling "
+                        f"measure via its sql"
+                    )
+                try:
+                    ref = cube.measure(ref_name)
+                except KeyError:
+                    raise ValueError(
+                        f"window measure {member.name!r} references unknown "
+                        f"measure {ref_name!r}"
+                    ) from None
+                if ref.type in self._WINDOW_TYPES or ref.type == MeasureType.CALCULATED:
+                    raise ValueError(
+                        f"window measure {member.name!r} may only reference a "
+                        f"concrete aggregate, not {{{ref_name}}}"
+                    )
+                self._ensure_visible("measure", ref)
+                specs.append((path, member.type, f"{cube.name}.{ref_name}"))
+        return specs
+
+    def _window_fn(self, wtype: MeasureType, ref_path: str, order_cols: str) -> str:
+        col = f'sub."{ref_path}"'
+        if wtype in (MeasureType.RUNNING_TOTAL, MeasureType.RUNNING_SUM):
+            return f"sum({col}) OVER (ORDER BY {order_cols})"
+        if wtype == MeasureType.RANK:
+            return f"rank() OVER (ORDER BY {order_cols})"
+        if wtype == MeasureType.ROW_NUMBER:
+            return f"row_number() OVER (ORDER BY {order_cols})"
+        raise ValueError(f"unsupported window type {wtype!r}")  # pragma: no cover
+
+    def _window_order_cols(self) -> str:
+        cols = [f'sub."{td.dimension}"' for td in self.query.timeDimensions]
+        cols += [f'sub."{p}"' for p in self.query.dimensions]
+        if not cols:
+            raise ValueError("window measures require a dimension or timeDimension to order by")
+        return ", ".join(cols)
+
+    def _measure_select_item(self, path: str) -> str:
+        cube, _kind, member = self._resolve_member(path)
+        self._ensure_visible("measure", member)
+        if member.type == MeasureType.CALCULATED:
+            expr = self._calculated_sql(cube, member)
+        else:
+            expr = self._measure_sql(member)
+        return f'{expr} AS "{path}"'
+
+    def _collect_where(self, time_ranges: list[str]) -> list[str]:
+        where: list[str] = []
+        for _alias, cube in self._cubes.items():
+            if not PermissionBuilder.cube_visible(cube, self.ctx):
+                raise ValueError(f"cube {cube.name!r} is not available to this user")
+            for cond in PermissionBuilder.apply_row_level(cube, self.ctx):
+                where.append(cond)
+        for seg_path in self.query.segments:
+            _cube, _kind, member = self._resolve_member(seg_path)
+            where.append(member.sql)
+        for f in self.query.filters:
+            where.append(self._compile_filter(f))
+        where.extend(time_ranges)
+        return where
+
+    def _assemble_body(
+        self,
+        select_items: list[str],
+        from_sql: str,
+        joins: list[str],
+        where: list[str],
+        group_items: list[str],
+    ) -> str:
+        parts = ["SELECT " + ",\n       ".join(select_items), f"FROM {from_sql}"]
+        parts.extend(joins)
+        if where:
+            parts.append("WHERE " + "\n  AND ".join(where))
+        if group_items:
+            parts.append("GROUP BY " + ", ".join(group_items))
+        return "\n".join(parts)
+
+    def _tail(self) -> str:
+        parts: list[str] = []
+        order_items = self.query.order_items()
+        if order_items:
+            clauses = ", ".join(f'"{p}" {d.upper()}' for p, d in order_items)
+            parts.append("ORDER BY " + clauses)
+        if self.query.limit is not None:
+            parts.append(f"LIMIT {int(self.query.limit)}")
+        if self.query.offset is not None:
+            parts.append(f"OFFSET {int(self.query.offset)}")
+        return ("\n".join(parts) + "\n") if parts else ""
+
+    def _render(self) -> str:
+        window_specs = self._window_specs()
+        window_paths = {s[0] for s in window_specs}
+
+        inner_select: list[str] = []
+        group_items: list[str] = []
+        time_ranges: list[str] = []
+
+        for path in self.query.measures:
+            if path in window_paths:
+                continue
+            inner_select.append(self._measure_select_item(path))
+        # Window functions need their referenced aggregate available in the inner query.
+        for _path, _t, ref in window_specs:
+            if not any(s.endswith(f'AS "{ref}"') for s in inner_select):
+                inner_select.append(self._measure_select_item(ref))
 
         for path in self.query.dimensions:
             cube, _kind, member = self._resolve_member(path)
             self._ensure_visible("dimension", member)
-            select_items.append(f'{member.sql} AS "{path}"')
+            inner_select.append(f'{member.sql} AS "{path}"')
             group_items.append(member.sql)
 
-        time_ranges: list[str] = []
         for td in self.query.timeDimensions:
             cube, _kind, member = self._resolve_member(td.dimension)
             self._ensure_visible("dimension", member)
             col = member.sql
-            if td.granularity:
-                expr = f"date_trunc('{td.granularity}', {col})"
-            else:
-                expr = col
-            select_items.append(f'{expr} AS "{td.dimension}"')
+            expr = f"date_trunc('{td.granularity}', {col})" if td.granularity else col
+            inner_select.append(f'{expr} AS "{td.dimension}"')
             group_items.append(expr)
             if td.dateRange is not None:
                 start, end = resolve_date_range(
@@ -244,41 +349,27 @@ class SQLBuilder:
                     f" AND {col} <= {self._params.bind(end)}"
                 )
 
-        # WHERE: RLS (each touched cube) + segments + filters + time ranges
-        where: list[str] = []
-        for _alias, cube in self._cubes.items():
-            if not PermissionBuilder.cube_visible(cube, self.ctx):
-                raise ValueError(f"cube {cube.name!r} is not available to this user")
-            for cond in PermissionBuilder.apply_row_level(cube, self.ctx):
-                where.append(cond)
-
-        for seg_path in self.query.segments:
-            _cube, _kind, member = self._resolve_member(seg_path)
-            where.append(member.sql)
-
-        for f in self.query.filters:
-            where.append(self._compile_filter(f))
-
-        where.extend(time_ranges)
-
+        where = self._collect_where(time_ranges)
         from_sql, joins = self._from_clause()
 
-        parts = ["SELECT " + ",\n       ".join(select_items)]
-        parts.append(f"FROM {from_sql}")
-        for j in joins:
-            parts.append(j)
-        if where:
-            parts.append("WHERE " + "\n  AND ".join(where))
-        if group_items:
-            parts.append("GROUP BY " + ", ".join(group_items))
+        if not window_specs:
+            return self._assemble_body(inner_select, from_sql, joins, where, group_items) + "\n" + self._tail()
 
-        order_items = self.query.order_items()
-        if order_items:
-            clauses = ", ".join(f'"{path}" {direction.upper()}' for path, direction in order_items)
-            parts.append("ORDER BY " + clauses)
-        if self.query.limit is not None:
-            parts.append(f"LIMIT {int(self.query.limit)}")
-        if self.query.offset is not None:
-            parts.append(f"OFFSET {int(self.query.offset)}")
+        # Window path: grouped inner query wrapped by an outer query applying window fns.
+        inner_sql = self._assemble_body(inner_select, from_sql, joins, where, group_items)
+        order_cols = self._window_order_cols()
 
-        return "\n".join(parts) + "\n"
+        outer_select: list[str] = []
+        for path in self.query.measures:
+            if path in window_paths:
+                continue
+            outer_select.append(f'sub."{path}" AS "{path}"')
+        for path in self.query.dimensions:
+            outer_select.append(f'sub."{path}" AS "{path}"')
+        for td in self.query.timeDimensions:
+            outer_select.append(f'sub."{td.dimension}" AS "{td.dimension}"')
+        for path, wtype, ref in window_specs:
+            outer_select.append(f'{self._window_fn(wtype, ref, order_cols)} AS "{path}"')
+
+        sql = "SELECT " + ",\n       ".join(outer_select) + f"\nFROM (\n{inner_sql}\n) sub\n"
+        return sql + self._tail()

@@ -14,6 +14,8 @@ from contextlib import asynccontextmanager
 
 import redis.asyncio as redis_asyncio
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from cubepy.api.graphql import build_graphql_router
@@ -51,8 +53,35 @@ def create_app(orchestrator: QueryOrchestrator | None = None) -> FastAPI:
     app.state.orchestrator = orchestrator
 
     @app.get("/readyz")
-    async def readyz() -> dict[str, str]:
-        return {"status": "ok"}
+    async def readyz() -> JSONResponse:
+        components: dict[str, str] = {}
+
+        engine: AsyncEngine | None = getattr(app.state, "engine", None)
+        if engine is not None:
+            try:
+                async with engine.connect() as conn:
+                    await conn.execute(text("SELECT 1"))
+                components["db"] = "up"
+            except Exception:  # noqa: BLE001 — any failure means down
+                components["db"] = "down"
+        else:
+            components["db"] = "unknown"
+
+        redis_client: redis_asyncio.Redis | None = getattr(app.state, "redis", None)
+        if redis_client is not None:
+            try:
+                await redis_client.ping()
+                components["redis"] = "up"
+            except Exception:  # noqa: BLE001
+                components["redis"] = "down"
+        else:
+            components["redis"] = "unknown"
+
+        healthy = all(v != "down" for v in components.values())
+        return JSONResponse(
+            {"status": "ok" if healthy else "degraded", "components": components},
+            status_code=200 if healthy else 503,
+        )
 
     app.include_router(rest_router, prefix="/cubejs-api")
     app.include_router(ws_router, prefix="/cubejs-api")

@@ -55,6 +55,47 @@ def test_from_jwt_invalid_token_raises() -> None:
         SecurityContext.from_jwt("not.a.jwt", secret=SECRET)
 
 
+def test_from_jwt_rs256_accepts_and_rejects() -> None:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    priv = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    priv_pem = priv.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+    pub_pem = priv.public_key().public_bytes(
+        serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode()
+
+    token = pyjwt.encode({"sub": "u1", "role": "admin"}, priv_pem, algorithm="RS256")
+    ctx = SecurityContext.from_jwt(token, secret=pub_pem, algorithm="RS256")
+    assert ctx.user_id == "u1"
+    assert ctx.role == "admin"
+
+    # A different keypair must reject the token.
+    other = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    other_pub = other.public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+    ).decode()
+    with pytest.raises(pyjwt.PyJWTError):
+        SecurityContext.from_jwt(token, secret=other_pub, algorithm="RS256")
+
+
+async def test_auth_rs256_without_public_key_returns_500(monkeypatch: pytest.MonkeyPatch) -> None:
+    from fastapi import HTTPException
+
+    from cubepy.security import auth
+
+    monkeypatch.setattr(auth.settings, "jwt_algorithm", "RS256")
+    monkeypatch.setattr(auth.settings, "jwt_public_key", None)
+    with pytest.raises(HTTPException) as exc:
+        await auth.security_context(authorization="Bearer some-token")
+    assert exc.value.status_code == 500
+
+
 # --- PermissionBuilder.apply_row_level ---------------------------------------
 
 def _orders_cube() -> CubeMeta:

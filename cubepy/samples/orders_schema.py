@@ -29,6 +29,7 @@ def register_samples() -> None:
         avg_order_value = measure(
             None, MeasureType.CALCULATED, formula="{revenue} / NULLIF({count}, 0)"
         )
+        cumulative_revenue = measure("revenue", MeasureType.RUNNING_TOTAL)
         status = dimension("status", "string")
         created_at = dimension("created_at", "time")
 
