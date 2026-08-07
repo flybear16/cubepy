@@ -30,6 +30,10 @@ dev = [
     "fakeredis>=2.21",          # in-memory redis for cache unit tests
     "testcontainers[postgres]>=4.0",
     "ruff>=0.4",
+    "duckdb-engine>=0.13",      # DuckDB data source (in-process OLAP)
+]
+duckdb = [
+    "duckdb-engine>=0.13",
 ]
 
 [build-system]

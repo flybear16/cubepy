@@ -16,34 +16,40 @@ import redis.asyncio as redis_asyncio
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.engine import Engine
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from cubepy.api.graphql import build_graphql_router
 from cubepy.api.routes_rest import router as rest_router
 from cubepy.api.routes_ws import router as ws_router
 from cubepy.cache.redis_cache import RedisCache
 from cubepy.config import settings
-from cubepy.orchestrator.executor import AsyncEngineExecutor
+from cubepy.orchestrator.executor import make_engine_and_executor
 from cubepy.orchestrator.orchestrator import QueryOrchestrator
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    engine: AsyncEngine | None = None
+    engine: AsyncEngine | Engine | None = None
+    is_async_engine = True
     redis_client: redis_asyncio.Redis | None = None
     if app.state.orchestrator is None:
-        engine = create_async_engine(settings.pg_dsn, pool_pre_ping=True)
+        dsn = settings.db_dsn or settings.pg_dsn
+        engine, executor, is_async_engine = make_engine_and_executor(dsn)
         redis_client = redis_asyncio.from_url(settings.redis_url)
         app.state.orchestrator = QueryOrchestrator(
             RedisCache(redis_client),
-            AsyncEngineExecutor(engine),
+            executor,
             settings=settings,
         )
         app.state.engine = engine
         app.state.redis = redis_client
     yield
     if engine is not None:
-        await engine.dispose()
+        if is_async_engine:
+            await engine.dispose()  # type: ignore[func-returns-value]
+        else:
+            engine.dispose()
     if redis_client is not None:
         await redis_client.aclose()
 

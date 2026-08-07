@@ -16,6 +16,8 @@ class Settings(BaseSettings):
 
     # Data sources. Hologres speaks the Postgres wire protocol -> asyncpg driver.
     pg_dsn: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/cubepy"
+    # Generic DSN override (any SQLAlchemy URL, e.g. duckdb:///path.duckdb).
+    db_dsn: str | None = None
 
     # Cache
     redis_url: str = "redis://localhost:6379/0"
