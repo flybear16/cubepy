@@ -38,10 +38,12 @@ from cubepy.schema.meta import (
     Join,
     Measure,
     MeasureType,
+    PreAggregation,
     RelationshipType,
     Segment,
 )
 from cubepy.schema.registry import registry
+from cubepy.schema.validators import validate_cube
 
 __all__ = [
     "cube",
@@ -50,6 +52,7 @@ __all__ = [
     "segment",
     "load_cube_file",
     "load_cube_dir",
+    "PreAggregation",
 ]
 
 
@@ -135,6 +138,8 @@ def cube(
     shown: Any = None,
     title: str | None = None,
     description: str | None = None,
+    pre_aggregations: tuple[PreAggregation, ...] | list[PreAggregation] | None = None,
+    security_columns: tuple[str, ...] | list[str] | None = None,
 ) -> Any:
     """Class decorator: extract Measure/Dimension/Segment attributes and register."""
 
@@ -168,7 +173,10 @@ def cube(
             shown=shown,
             title=title,
             description=description,
+            pre_aggregations=tuple(pre_aggregations or ()),
+            security_columns=tuple(security_columns or ()),
         )
+        validate_cube(meta)
         registry.register(meta)
         return cls
 
@@ -207,6 +215,19 @@ def _cube_from_dict(d: dict[str, Any]) -> CubeMeta:
     joins = {
         t: _resolve_join(t, spec) for t, spec in (d.get("joins") or {}).items()
     }
+    pre_aggs = tuple(
+        PreAggregation(
+            name=pa["name"],
+            measures=tuple(pa.get("measures") or ()),
+            dimensions=tuple(pa.get("dimensions") or ()),
+            time_dimension=pa.get("timeDimension"),
+            granularity=pa.get("granularity"),
+            refresh_key=pa.get("refreshKey"),
+            security_columns=tuple(pa.get("securityColumns") or ()),
+        )
+        for pa in (d.get("preAggregations") or [])
+    )
+    security_columns = tuple(d.get("securityColumns") or ())
     meta = CubeMeta(
         name=d["name"],
         sql=d["sql"],
@@ -217,7 +238,10 @@ def _cube_from_dict(d: dict[str, Any]) -> CubeMeta:
         refresh_key=d.get("refreshKey"),
         title=d.get("title"),
         description=d.get("description"),
+        pre_aggregations=pre_aggs,
+        security_columns=security_columns,
     )
+    validate_cube(meta)
     registry.register(meta)
     return meta
 

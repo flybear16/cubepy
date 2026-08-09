@@ -26,6 +26,7 @@ from cubepy.cache.redis_cache import RedisCache
 from cubepy.config import settings
 from cubepy.orchestrator.executor import make_engine_and_executor
 from cubepy.orchestrator.orchestrator import QueryOrchestrator
+from cubepy.scheduler import PreAggScheduler
 
 
 @asynccontextmanager
@@ -33,6 +34,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     engine: AsyncEngine | Engine | None = None
     is_async_engine = True
     redis_client: redis_asyncio.Redis | None = None
+    scheduler: PreAggScheduler | None = None
     if app.state.orchestrator is None:
         dsn = settings.db_dsn or settings.pg_dsn
         engine, executor, is_async_engine = make_engine_and_executor(dsn)
@@ -44,7 +46,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         app.state.engine = engine
         app.state.redis = redis_client
+        if settings.preagg_enabled:
+            scheduler = PreAggScheduler(
+                executor, default_every=settings.default_refresh_every
+            )
+            await scheduler.start(build_on_start=settings.preagg_refresh_on_start)
+            app.state.scheduler = scheduler
     yield
+    if scheduler is not None:
+        scheduler.shutdown()
     if engine is not None:
         if is_async_engine:
             await engine.dispose()  # type: ignore[func-returns-value]

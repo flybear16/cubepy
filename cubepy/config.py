@@ -26,6 +26,14 @@ class Settings(BaseSettings):
     # Subscribe default polling interval (seconds)
     default_refresh_every: int = 30
 
+    # Pre-aggregation: off by default — rollup tables must be built (Phase 3) and
+    # the matcher is fail-closed, so flipping this on never yields wrong results,
+    # only falls back to the base cube if a rollup is missing.
+    preagg_enabled: bool = False
+    # When pre-aggregation is enabled, build every rollup once on startup before
+    # serving, then refresh each on its refresh_key.every interval.
+    preagg_refresh_on_start: bool = True
+
     log_level: str = "INFO"
 
 

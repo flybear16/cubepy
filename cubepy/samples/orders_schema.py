@@ -8,7 +8,7 @@ Register via :func:`register_samples`. Cube names are the table names; member
 from __future__ import annotations
 
 from cubepy.schema.loader import cube, dimension, measure
-from cubepy.schema.meta import MeasureType
+from cubepy.schema.meta import MeasureType, PreAggregation
 from cubepy.schema.registry import registry
 
 
@@ -20,7 +20,22 @@ def register_samples() -> None:
         security_context={
             "check_permission": lambda ctx: [f"orders.tenant_id = {ctx.tenant_id}"]
         },
+        security_columns=("tenant_id",),
         refresh_key={"every": 60},
+        pre_aggregations=(
+            # Daily rollup of the additive measures. Built/refreshed by the
+            # scheduler (every 300s) when preagg_enabled; the matcher routes
+            # SUM/COUNT-by-status/day queries here and RLS still filters by tenant.
+            PreAggregation(
+                "daily",
+                ("Orders.revenue", "Orders.count"),
+                ("Orders.status",),
+                "Orders.created_at",
+                "day",
+                refresh_key={"every": 300},
+                security_columns=("tenant_id",),
+            ),
+        ),
     )
     class _Orders:
         revenue = measure("amount", MeasureType.SUM)

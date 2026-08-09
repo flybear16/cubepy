@@ -35,12 +35,13 @@ def build_envelope(
     rows: list[dict[str, Any]],
     *,
     now: datetime | None = None,
+    used_pre_aggregations: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     ts = (now or datetime.now(UTC)).isoformat()
     return {
         "data": rows,
         "annotation": build_annotation(query),
         "lastRefreshTime": ts,
-        "usedPreAggregations": [],
+        "usedPreAggregations": used_pre_aggregations or [],
         "refreshKeyMatches": True,
     }

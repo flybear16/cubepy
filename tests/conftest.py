@@ -54,3 +54,15 @@ def pg_dsn() -> Iterator[str]:
     async_url = sync_url.replace("+psycopg2", "+asyncpg").replace("+psycopg", "+asyncpg")
     yield async_url
     container.stop()
+
+
+@pytest.fixture
+def pg_reseed(pg_dsn) -> str:
+    """Reset the shared PG DB to the canonical seed (function-scoped).
+
+    The ``pg_dsn`` fixture seeds once per session; some tests mutate ``orders``
+    without restoring it. Tests that assert exact seed values depend on a known
+    baseline, so they re-seed via this fixture before running.
+    """
+    _seed(pg_dsn)
+    return pg_dsn

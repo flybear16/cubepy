@@ -13,7 +13,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Protocol
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.sql.elements import TextClause
@@ -28,6 +28,10 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
+def _rows(result: Any) -> list[dict[str, Any]]:
+    return [{k: _json_safe(v) for k, v in row.items()} for row in result.mappings().all()]
+
+
 class QueryExecutor(Protocol):
     async def execute(self, stmt: TextClause) -> list[dict[str, Any]]: ...
 
@@ -39,10 +43,26 @@ class AsyncEngineExecutor:
     async def execute(self, stmt: TextClause) -> list[dict[str, Any]]:
         async with self.engine.connect() as conn:
             result = await conn.execute(stmt)
-            return [
-                {k: _json_safe(v) for k, v in row.items()}
-                for row in result.mappings().all()
-            ]
+            return _rows(result)
+
+    async def execute_with_session(
+        self, stmt: TextClause, session_sql: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Run an optional session SQL (e.g. ``SET TIME ZONE 'UTC'``) on the same
+        connection before the statement. Used for rollup queries whose UTC bucketing
+        must not drift with the session timezone (plan §5/G1).
+        """
+        async with self.engine.connect() as conn:
+            if session_sql:
+                await conn.execute(text(session_sql))
+            result = await conn.execute(stmt)
+            # Materialise rows BEFORE commit — commit() closes the result, so a
+            # SELECT read after it raises ResourceClosedError. DDL returns no rows.
+            out = _rows(result) if result.returns_rows else []
+            # Commit: the build path runs transactional DDL (DROP/CREATE TABLE),
+            # which otherwise rolls back on connection close. A no-op for reads.
+            await conn.commit()
+            return out
 
 
 class SyncEngineExecutor:
@@ -58,10 +78,21 @@ class SyncEngineExecutor:
         def _run() -> list[dict[str, Any]]:
             with self.engine.connect() as conn:
                 result = conn.execute(stmt)
-                return [
-                    {k: _json_safe(v) for k, v in row.items()}
-                    for row in result.mappings().all()
-                ]
+                return _rows(result)
+
+        return await asyncio.to_thread(_run)
+
+    async def execute_with_session(
+        self, stmt: TextClause, session_sql: str | None = None
+    ) -> list[dict[str, Any]]:
+        def _run() -> list[dict[str, Any]]:
+            with self.engine.connect() as conn:
+                if session_sql:
+                    conn.execute(text(session_sql))
+                result = conn.execute(stmt)
+                out = _rows(result) if result.returns_rows else []
+                conn.commit()  # see AsyncEngineExecutor: persist transactional DDL.
+                return out
 
         return await asyncio.to_thread(_run)
 

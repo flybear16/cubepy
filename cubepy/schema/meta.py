@@ -99,6 +99,25 @@ class Join:
 
 
 @dataclass(frozen=True)
+class PreAggregation:
+    """Declared rollup: which additive measures / dimensions / time bucket to materialise.
+
+    ``measures`` / ``dimensions`` / ``time_dimension`` use full ``Cube.member`` paths.
+    ``security_columns`` are the physical columns the rollup table carries so that RLS
+    predicates (declared on the cube via ``security_columns``) can be replayed at query
+    time; the matcher requires ``rollup.security_columns ⊇ cube.security_columns``.
+    """
+
+    name: str
+    measures: tuple[str, ...]
+    dimensions: tuple[str, ...] = ()
+    time_dimension: str | None = None
+    granularity: str | None = None
+    refresh_key: dict[str, Any] | None = None
+    security_columns: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class CubeMeta:
     name: str
     sql: str
@@ -112,6 +131,11 @@ class CubeMeta:
     refresh_key: dict[str, Any] | None = None
     title: str | None = None
     description: str | None = None
+    # Declared rollups (filled by the loader; validated before registration).
+    pre_aggregations: tuple[PreAggregation, ...] = ()
+    # Physical columns RLS predicates may filter on. Required (non-empty) when
+    # ``security_context`` is set, so rollups can be checked for column coverage.
+    security_columns: tuple[str, ...] = ()
 
     def measure(self, name: str) -> Measure:
         for m in self.measures:

@@ -23,6 +23,7 @@ from cubepy.orchestrator.preagg import router as preagg_router
 from cubepy.security.context import SecurityContext
 from cubepy.sqlgen.builder import SQLBuilder
 from cubepy.sqlgen.query import Query
+from cubepy.sqlgen.rollup import RollupBuilder
 
 logger = logging.getLogger("cubepy.orchestrator")
 
@@ -63,6 +64,12 @@ class QueryOrchestrator:
         self.settings = settings
         # cache_key -> Future, so N concurrent cold identical queries execute once.
         self._inflight: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        # Minimal pre-agg observability: counted only while preagg_enabled.
+        self._preagg: dict[str, int] = {"hits": 0, "misses": 0, "fallbacks": 0}
+
+    @property
+    def preagg_counters(self) -> dict[str, int]:
+        return dict(self._preagg)
 
     async def load(
         self,
@@ -123,9 +130,37 @@ class QueryOrchestrator:
     async def _execute(
         self, query: Query, ctx: SecurityContext, now: datetime | None
     ) -> dict[str, Any]:
-        # Pre-agg seam: always None for now (backing store handles aggregation).
-        pre_agg = preagg_router.match(query)
-        assert pre_agg is None  # until a real router is plugged in
+        route = preagg_router.match(query, ctx)
+        if route is not None and self.settings.preagg_enabled:
+            try:
+                stmt = RollupBuilder(query, ctx, route, now=now).build()
+                # Real engines pin the session to UTC so day-buckets don't drift with
+                # the session timezone (plan §5/G1). Test fakes lack this method and
+                # fall through to plain execute.
+                run_with_session = getattr(self.executor, "execute_with_session", None)
+                if run_with_session is not None:
+                    rows = await run_with_session(stmt, "SET TIME ZONE 'UTC'")
+                else:
+                    rows = await self.executor.execute(stmt)
+                self._preagg["hits"] += 1
+                logger.info("pre-agg routed to %s", route.table_name)
+                return build_envelope(
+                    query,
+                    rows,
+                    now=now,
+                    used_pre_aggregations=[{"tableName": route.table_name}],
+                )
+            except Exception:
+                # Rollup missing/stale/broken -> transparent fallback to the base
+                # cube. BaseException (KeyboardInterrupt/SystemExit) propagates.
+                self._preagg["fallbacks"] += 1
+                logger.warning(
+                    "pre-agg %s failed; falling back to base cube",
+                    route.table_name,
+                    exc_info=True,
+                )
+        elif self.settings.preagg_enabled:
+            self._preagg["misses"] += 1
         builder = SQLBuilder(query, ctx, now=now)
         rows = await self.executor.execute(builder.build())
         return build_envelope(query, rows, now=now)
