@@ -37,7 +37,7 @@ def pg_dsn() -> Iterator[str]:
         return env_dsn
 
     try:
-        from testcontainers.postgres import PostgresContainer
+        from testcontainers.community.postgres import PostgresContainer
     except ImportError:
         pytest.skip("testcontainers not installed; set CUBEPY_TEST_PG_DSN to run PG tests")
         return ""  # unreachable

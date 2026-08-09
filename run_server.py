@@ -13,7 +13,7 @@ import redis.asyncio as redis_asyncio
 import uvicorn
 from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import create_async_engine
-from testcontainers.postgres import PostgresContainer
+from testcontainers.community.postgres import PostgresContainer
 
 from cubepy.api.app import create_app
 from cubepy.cache.redis_cache import RedisCache
