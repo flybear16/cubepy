@@ -64,12 +64,6 @@ class QueryOrchestrator:
         self.settings = settings
         # cache_key -> Future, so N concurrent cold identical queries execute once.
         self._inflight: dict[str, asyncio.Future[dict[str, Any]]] = {}
-        # Minimal pre-agg observability: counted only while preagg_enabled.
-        self._preagg: dict[str, int] = {"hits": 0, "misses": 0, "fallbacks": 0}
-
-    @property
-    def preagg_counters(self) -> dict[str, int]:
-        return dict(self._preagg)
 
     async def load(
         self,
@@ -142,7 +136,6 @@ class QueryOrchestrator:
                     rows = await run_with_session(stmt, "SET TIME ZONE 'UTC'")
                 else:
                     rows = await self.executor.execute(stmt)
-                self._preagg["hits"] += 1
                 logger.info("pre-agg routed to %s", route.table_name)
                 return build_envelope(
                     query,
@@ -153,14 +146,11 @@ class QueryOrchestrator:
             except Exception:
                 # Rollup missing/stale/broken -> transparent fallback to the base
                 # cube. BaseException (KeyboardInterrupt/SystemExit) propagates.
-                self._preagg["fallbacks"] += 1
                 logger.warning(
                     "pre-agg %s failed; falling back to base cube",
                     route.table_name,
                     exc_info=True,
                 )
-        elif self.settings.preagg_enabled:
-            self._preagg["misses"] += 1
         builder = SQLBuilder(query, ctx, now=now)
         rows = await self.executor.execute(builder.build())
         return build_envelope(query, rows, now=now)

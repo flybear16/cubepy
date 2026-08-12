@@ -35,6 +35,10 @@ def _rows(result: Any) -> list[dict[str, Any]]:
 class QueryExecutor(Protocol):
     async def execute(self, stmt: TextClause) -> list[dict[str, Any]]: ...
 
+    async def execute_with_session(
+        self, stmt: TextClause, session_sql: str | None = None
+    ) -> list[dict[str, Any]]: ...
+
 
 class AsyncEngineExecutor:
     def __init__(self, engine: AsyncEngine) -> None:

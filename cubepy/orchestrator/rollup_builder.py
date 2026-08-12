@@ -74,12 +74,13 @@ class RollupBuilderService:
             f"GROUP BY {group_by}"
         )
 
-        run = getattr(self.executor, "execute_with_session", None)
-        if run is None:  # pragma: no cover - real executors always have it
-            raise TypeError("executor must support execute_with_session to build rollups")
         # Idempotent refresh: drop then recreate under a UTC-pinned session.
-        await run(text(f"DROP TABLE IF EXISTS {table}"), "SET TIME ZONE 'UTC'")
-        await run(text(create_sql), "SET TIME ZONE 'UTC'")
+        await self.executor.execute_with_session(
+            text(f"DROP TABLE IF EXISTS {table}"), "SET TIME ZONE 'UTC'"
+        )
+        await self.executor.execute_with_session(
+            text(create_sql), "SET TIME ZONE 'UTC'"
+        )
         return table
 
     def _measure_ctas_sql(self, cube: CubeMeta, measure: Any) -> str:

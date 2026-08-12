@@ -8,7 +8,7 @@ CubePy 是 [Cube.js](https://github.com/cube-js/cube) 语义层的 Python 重写
 
 `cube.js/` 目录是上游 Cube.js 的 shallow clone 参考副本（已被 `.gitignore`），**不是本项目源码**。移植契约记录在 `docs/06-cubejs-contract-notes.md`；架构与调研文档在 `docs/`。不要修改 `cube.js/`，需要核对行为时只读它。
 
-**预聚合层被有意设计为 no-op**：`PreAggRouter` 是一个 seam，恒返回 `None`（orchestrator 中有 `assert pre_agg is None`）。Hologres 动态表在数据库引擎内维护聚合，应用层预聚合冗余（见 `docs/02`、`docs/05`）。要实现真正的预聚合，就替换这个 seam。
+**预聚合层**：实装的「同库物化 rollup + 聚合导航」MVP（见 `docs/07`、`docs/08`）。默认关闭（`CUBEPY_PREAGG_ENABLED=false`），开启后 `PreAggRouter.match(query, ctx)` 做 fail-closed 路由——同时满足单 cube、SUM/COUNT 可加、UTC、粒度可上卷、RLS 列覆盖才走 rollup 表，否则或异常时透明回退 base cube。刷新由 `scheduler.py` 的 per-rollup asyncio 定时任务（`refresh_key.every`）驱动。Hologres 动态表在引擎内维护聚合，应用层 rollup 是可选加速而非必需（见 `docs/02`、`docs/05`）。
 
 ## 常用命令
 
@@ -52,7 +52,7 @@ HTTP/WS/GraphQL 请求
 - **`schema/`** — 语义模型 DSL。`@cube` 装饰器 + YAML loader（`loader.py`），编译为 frozen dataclass（`meta.py`: `CubeMeta`/`Measure`/`Dimension`/`Join`），注册到进程级单例 `registry`（`registry.py`）。**依赖方向铁律：schema 永远不 import security**（`shown`/`check_permission` 回调把 ctx 当 opaque 对象接收）。
 - **`security/`** — `context.py` 的 `SecurityContext`（frozen Pydantic 模型，从 JWT 解码，保留 `claims` 供自定义断言）。`permissions.py` 的 `PermissionBuilder`：`apply_row_level` 返回 RLS WHERE 片段，`filter_fields`/`cube_visible` 处理字段级 `shown` 可见性。`auth.py` 的 `security_context` 是 FastAPI 依赖（支持 HS256/RS256）。
 - **`sqlgen/`** — `builder.py` 的 `SQLBuilder` 把 `Query` + ctx 转成 SQLAlchemy `text()`（`query.py` 是 cube.js 风格 query 的 Pydantic 解析）。`operators.py` 是完整 filter 操作符表，`date_range.py` 处理 time dimension。
-- **`orchestrator/`** — `orchestrator.py` 编排 缓存 → 预聚合路由 → 执行 → 缓存写入；含冷查询去重（in-flight Future）与 refreshKey 探针。`executor.py` 提供 async/sync 两种执行器。`preagg.py` 是 no-op 路由 seam。
+- **`orchestrator/`** — `orchestrator.py` 编排 缓存 → 预聚合路由 → 执行 → 缓存写入；含冷查询去重（in-flight Future）与 refreshKey 探针。`executor.py` 提供 async/sync 两种执行器。`preagg.py` 是 fail-closed 聚合导航 matcher（命中返回 `RollupRoute`），配合 `sqlgen/rollup.py` 的 `RollupBuilder` 改写、`rollup_builder.py` 的幂等 CTAS、`scheduler.py` 的定时刷新。
 - **`api/`** — REST（`routes_rest.py`：`/cubejs-api/v1/{load,sql,meta,subscribe}`）、WS subscribe（`routes_ws.py`）、GraphQL（`graphql.py`，Strawberry）。`app.py` 是应用工厂，测试可直接注入 orchestrator 绕过真实 engine/Redis。
 - **`cache/`** — `redis.asyncio` 封装（`redis_cache.py`）。**`client/`** — 异步客户端 SDK。
 

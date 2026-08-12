@@ -85,11 +85,10 @@ async def test_start_schedules_one_job_per_rollup_with_refresh_every() -> None:
     sched = PreAggScheduler(object())  # type: ignore[arg-type]
     await sched.start(build_on_start=False)
     try:
-        jobs = {j.id: j for j in sched._sched.get_jobs()}
-        assert set(jobs) == {"Orders.daily", "Orders.hourly"}
+        assert set(sched._tasks) == {"Orders.daily", "Orders.hourly"}
         # Declared refresh_key.every honoured; missing every falls back to default.
-        assert jobs["Orders.daily"].trigger.interval.total_seconds() == 120
-        assert jobs["Orders.hourly"].trigger.interval.total_seconds() == sched._default_every
+        assert sched._intervals["Orders.daily"] == 120
+        assert sched._intervals["Orders.hourly"] == sched._default_every
     finally:
         sched.shutdown()
 

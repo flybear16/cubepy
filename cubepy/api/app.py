@@ -50,7 +50,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             scheduler = PreAggScheduler(
                 executor, default_every=settings.default_refresh_every
             )
-            await scheduler.start(build_on_start=settings.preagg_refresh_on_start)
+            await scheduler.start()
             app.state.scheduler = scheduler
     yield
     if scheduler is not None:

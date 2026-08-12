@@ -383,7 +383,7 @@ async def test_start_builds_on_start(tmp_path):
     try:
         with eng.connect() as conn:
             assert conn.exec_driver_sql("SELECT COUNT(*) FROM cubepy_rollup_orders_daily").scalar() == 1
-        assert sched._sched.running
+        assert sched.running
     finally:
         sched.shutdown()
 
@@ -406,8 +406,7 @@ async def test_refresh_every_invalid_value_falls_back_to_default():
     sched = PreAggScheduler(object(), default_every=42)  # type: ignore[arg-type]
     await sched.start(build_on_start=False)
     try:
-        jobs = {j.id: j for j in sched._sched.get_jobs()}
-        assert jobs["Orders.daily"].trigger.interval.total_seconds() == 42
+        assert sched._intervals["Orders.daily"] == 42
     finally:
         sched.shutdown()
 

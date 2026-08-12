@@ -122,20 +122,3 @@ async def test_disabled_never_routes_to_rollup() -> None:
     assert exe.session_sql is None  # execute_with_session never called
     assert exe.exec_calls == 1
     assert env["usedPreAggregations"] == []
-
-
-async def test_preagg_counters_track_hit_miss_fallback() -> None:
-    # hit
-    orch, _ = _orch([{"Orders.revenue": 1.0}])
-    await orch.load(Query.parse(_QUERY), _ctx())
-    assert orch.preagg_counters["hits"] == 1
-    # miss: non-UTC timezone is rejected by the matcher (no route)
-    await orch.load(
-        Query.parse({"measures": ["Orders.revenue"], "timezone": "America/New_York"}),
-        _ctx(),
-    )
-    assert orch.preagg_counters["misses"] == 1
-    # fallback: rollup execute raises
-    orch2, _ = _orch([{"Orders.revenue": 1.0}], session_exc=RuntimeError("boom"))
-    await orch2.load(Query.parse(_QUERY), _ctx())
-    assert orch2.preagg_counters["fallbacks"] == 1
