@@ -13,19 +13,43 @@ gitignored). Porting notes live in `docs/06-cubejs-contract-notes.md`.
 | Schema (measures/dimensions/joins/segments, decorator + YAML) | ✅ |
 | Permission (SecurityContext, JWT, RLS via `check_permission`, field-level `shown`) | ✅ |
 | SQL generator (SQLAlchemy 2.0 `text`, full filter-operator table, time dimensions, joins) | ✅ |
-| Query orchestrator (Redis cache, ctx-scoped cache key, pre-agg router **stub**) | ✅ |
-| REST (`/cubejs-api/v1/{load,sql,meta}` + `/readyz`) | ✅ |
+| Query orchestrator (Redis cache, ctx-scoped cache key, in-flight dedupe, refreshKey probe) | ✅ |
+| Pre-aggregation (rollup materialisation + fail-closed navigation + scheduled refresh) | ✅ MVP (off by default) |
+| REST (`/cubejs-api/v1/{load,sql,meta,subscribe}` + `/readyz`) | ✅ |
 | WebSocket subscribe (`/cubejs-api/v1/subscribe`, hash-change push) | ✅ |
 | GraphQL (Strawberry, `/cubejs-api/graphql`) | ✅ |
+| Async client SDK (`client/`, REST + WS subscribe) | ✅ |
+| DuckDB data source (sync engine on a worker thread) | ✅ |
 | Real Postgres integration tests (testcontainers) | ✅ |
 
-**Pre-aggregation is intentionally skipped** — Hologres dynamic tables maintain aggregates
-inside the DB engine, so an app-level pre-agg layer is redundant (see `docs/02`, `docs/05`).
-`PreAggRouter` is a no-op seam so a real implementation can plug in later.
+**Pre-aggregation** is a same-DB materialised-rollup + aggregate-navigation MVP
+(see `docs/07`, `docs/08`), off by default (`CUBEPY_PREAGG_ENABLED=false`). When enabled,
+`PreAggRouter.match(query, ctx)` routes **fail-closed** — single cube, additive
+SUM/COUNT measures, UTC timezone, granularity roll-up, RLS column coverage — and the
+orchestrator transparently falls back to the base cube on any miss or error. Refresh is a
+per-rollup asyncio task in `scheduler.py` driven by `refresh_key.every` (no scheduler
+dependency). Hologres dynamic tables already maintain aggregates inside the engine, so the
+app-level rollup layer is an optional accelerator rather than a requirement
+(see `docs/02`, `docs/05`).
 
 ## Stack
 
-FastAPI · SQLAlchemy 2.0 (async, asyncpg) · Pydantic v2 · Redis · Strawberry · APScheduler · uv
+FastAPI · SQLAlchemy 2.0 (async, asyncpg) · Pydantic v2 · Redis (`redis.asyncio`) ·
+Strawberry · uv · pytest/testcontainers. Executors: asyncpg/aiosqlite run on an async
+engine; DuckDB (no async dialect) runs on a sync engine in a worker thread.
+
+## How a query flows
+
+```
+HTTP / WS / GraphQL
+  └─ security_context (FastAPI dependency)   JWT → SecurityContext
+     └─ QueryOrchestrator.load()
+        ├─ Redis cache lookup (key scoped to the security context)
+        ├─ refreshKey probe (source-data freshness signature)
+        ├─ PreAggRouter.match()              rollup rewrite, or base cube
+        ├─ SQLBuilder(query, ctx).build()    injects the RLS WHERE
+        └─ QueryExecutor.execute()           SQL → envelope
+```
 
 ## Run
 
@@ -37,15 +61,29 @@ export CUBEPY_REDIS_URL=redis://localhost:6379/0
 uv run uvicorn cubepy.api.app:app --reload   # http://127.0.0.1:8000/docs
 ```
 
+One-shot demo (testcontainers Postgres, auto-seeded, + local Redis) on port 8765:
+
+```bash
+uv run python run_server.py
+```
+
 ## Define a cube
 
 ```python
 from cubepy.schema.loader import cube, measure, dimension
-from cubepy.schema.meta import MeasureType
+from cubepy.schema.meta import MeasureType, PreAggregation
 
 @cube("Orders", "orders",
       joins={"Users": {"relationship": "belongsTo", "sql": "Orders.user_id = Users.id"}},
-      security_context={"check_permission": lambda ctx: [f"orders.tenant_id = {ctx.tenant_id}"]})
+      security_context={"check_permission": lambda ctx: [f"orders.tenant_id = {ctx.tenant_id}"]},
+      security_columns=("tenant_id",),
+      pre_aggregations=(
+          PreAggregation(
+              "daily", ("Orders.revenue", "Orders.count"), ("Orders.status",),
+              "Orders.created_at", "day",
+              refresh_key={"every": 300}, security_columns=("tenant_id",),
+          ),
+      ))
 class OrdersCube:
     revenue  = measure("amount", MeasureType.SUM)
     count    = measure(None, MeasureType.COUNT)
@@ -55,6 +93,7 @@ class OrdersCube:
 
 Member names are the declared attribute names (no auto-camelCase). Cube aliases are
 lowercased so Postgres's case-folding makes `Orders.user_id` / `Users.id` resolve consistently.
+Full pre-aggregation usage guide: `docs/08-preaggregation-usage.md`.
 
 ## Query
 
@@ -85,6 +124,7 @@ CUBEPY_TEST_PG_DSN=... uv run pytest  # use a real/local Postgres instead of a c
 - [05 - Py 重写架构建议](docs/05-cube-py重写架构建议.md)
 - [06 - Cube.js Contract Notes (porting reference)](docs/06-cubejs-contract-notes.md)
 - [07 - 预聚合方案调研](docs/07-预聚合方案调研.md)
+- [08 - 预聚合使用指南](docs/08-preaggregation-usage.md)
 
 ## License
 
