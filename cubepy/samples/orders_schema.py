@@ -10,6 +10,7 @@ from __future__ import annotations
 from cubepy.schema.loader import cube, dimension, measure
 from cubepy.schema.meta import MeasureType, PreAggregation
 from cubepy.schema.registry import registry
+from cubepy.security.permissions import sql_str
 
 
 def register_samples() -> None:
@@ -18,7 +19,7 @@ def register_samples() -> None:
         "orders",
         joins={"Users": {"relationship": "belongsTo", "sql": "Orders.user_id = Users.id"}},
         security_context={
-            "check_permission": lambda ctx: [f"orders.tenant_id = {ctx.tenant_id}"]
+            "check_permission": lambda ctx: [f"orders.tenant_id = {sql_str(ctx.tenant_id)}"]
         },
         security_columns=("tenant_id",),
         refresh_key={"every": 60},
@@ -52,7 +53,7 @@ def register_samples() -> None:
         "Users",
         "users",
         security_context={
-            "check_permission": lambda ctx: [f"users.tenant_id = {ctx.tenant_id}"]
+            "check_permission": lambda ctx: [f"users.tenant_id = {sql_str(ctx.tenant_id)}"]
         },
     )
     class _Users:

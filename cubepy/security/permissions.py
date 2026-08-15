@@ -18,8 +18,13 @@ from cubepy.schema.meta import CubeMeta, Dimension, Measure, Segment
 from cubepy.security.context import SecurityContext
 
 
-def _sql_str(value: Any) -> str:
-    """Render a Python value as a SQL string literal with escaped single quotes."""
+def sql_str(value: Any) -> str:
+    """Render a Python value as a SQL string literal with escaped single quotes.
+
+    Public so schema callbacks (``check_permission``, ``shown``) can safely
+    interpolate JWT claims into SQL fragments — claims are signed-but-untrusted,
+    so never splice them raw.
+    """
     text = "" if value is None else str(value)
     return "'" + text.replace("'", "''") + "'"
 
@@ -41,9 +46,9 @@ class PermissionBuilder:
 
         # Role-based convenience defaults (docs/05). These are additive.
         if ctx.role == "viewer":
-            conditions.append(f"{cube.name}.user_id = {_sql_str(ctx.user_id)}")
+            conditions.append(f"{cube.name}.user_id = {sql_str(ctx.user_id)}")
         elif ctx.role == "manager":
-            conditions.append(f"{cube.name}.department = {_sql_str(ctx.department)}")
+            conditions.append(f"{cube.name}.department = {sql_str(ctx.department)}")
 
         return conditions
 
