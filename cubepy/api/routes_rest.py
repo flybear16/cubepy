@@ -184,3 +184,4 @@ async def meta(ctx: SecurityContext = Depends(security_context)) -> dict[str, An
             }
         )
     return {"cubes": cubes}
+

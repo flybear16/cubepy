@@ -70,6 +70,11 @@ class Measure:
     # surfaced in /meta for clients, not used by the SQL generator.
     format: str | None = None
     drill_members: tuple[str, ...] = ()
+    # -- governance (metrics-platform fields; echoed by /v1/catalog) --
+    owner: str | None = None
+    tags: tuple[str, ...] = ()
+    # Lifecycle: draft / active / deprecated
+    status: str = "active"
 
 
 @dataclass(frozen=True)
@@ -83,6 +88,11 @@ class Dimension:
     description: str | None = None
     format: str | None = None
     drill_members: tuple[str, ...] = ()
+    # -- governance (metrics-platform fields; echoed by /v1/catalog) --
+    owner: str | None = None
+    tags: tuple[str, ...] = ()
+    # Lifecycle: draft / active / deprecated
+    status: str = "active"
 
 
 @dataclass(frozen=True)
@@ -136,6 +146,11 @@ class CubeMeta:
     # Physical columns RLS predicates may filter on. Required (non-empty) when
     # ``security_context`` is set, so rollups can be checked for column coverage.
     security_columns: tuple[str, ...] = ()
+    # -- governance (metrics-platform fields; echoed by /v1/catalog) --
+    owner: str | None = None
+    tags: tuple[str, ...] = ()
+    # Lifecycle: draft / active / deprecated
+    status: str = "active"
 
     def measure(self, name: str) -> Measure:
         for m in self.measures:

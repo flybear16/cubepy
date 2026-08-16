@@ -119,6 +119,62 @@ uv run pytest -m "not integration"  # skip the container tests
 CUBEPY_TEST_PG_DSN=... uv run pytest  # use a real/local Postgres instead of a container
 ```
 
+## Metrics platform (v0.2)
+
+**Catalog + lineage**（指标目录与血缘）— governance 字段随 schema 声明，两个平台端点：
+
+```yaml
+cubes:
+  - name: posts
+    sql: SELECT * FROM posts
+    owner: growth-team
+    tags: [content, core]
+    measures:
+      - {name: post_count, type: count, owner: alice, tags: [kpi]}
+      - {name: title_len_sum, sql: title_len, type: sum, status: deprecated}
+```
+
+```
+GET /cubepy/v1/catalog                                  # 目录（owner/tags/status + 血缘）
+GET /cubepy/v1/lineage                                  # 全量血缘图
+GET /cubepy/v1/lineage?table=posts&column=author_id     # 影响分析：改这列会炸谁
+```
+
+**Schema diff + CI**（变更管理）— breaking change 检测（删成员/改类型/改口径/改 join）+ 改名启发：
+
+```bash
+pip install cubepy-semantic
+cubepy-diff schemas/main.yml schemas/pr.yml --check   # CI 里有 breaking 就 exit 1
+```
+
+```yaml
+# .github/workflows/schema-ci.yml 片段
+- run: cubepy-diff schemas/main.yml schemas/${{ github.head_ref }}.yml --check
+```
+
+**Metric unit tests**（指标单测，差异化）— DuckDB 内存库 fixture，不起服务直接断言指标值：
+
+```python
+from cubepy.schema.loader import load_cube_file
+from cubepy.testing import fixture_engine, assert_query
+
+load_cube_file("schemas/shop.yml")
+eng = fixture_engine({"orders": [
+    {"id": 1, "customer_id": 10, "amount": 100},
+    {"id": 2, "customer_id": 20, "amount": 50},
+]})
+assert_query({"measures": ["orders.total_revenue"]},
+             [{"orders.total_revenue": 150}], engine=eng)
+```
+
+**AI context**（text-to-Query 支撑）— 给任意 LLM 喂目录+契约，产出可验证的 Cube Query：
+
+```python
+from cubepy.ai import system_prompt, members_index
+prompt = system_prompt()            # query 契约 + 成员目录 + 示例
+valid = members_index()             # 用手校验 LLM 输出的 member 路径
+```
+
 ## Docs
 
 - [01 - Hologres 动态表与物化视图](docs/01-hologres-动态表与物化视图.md)

@@ -52,6 +52,7 @@ __all__ = [
     "segment",
     "load_cube_file",
     "load_cube_dir",
+    "parse_cube_file",
     "PreAggregation",
 ]
 
@@ -183,7 +184,8 @@ def cube(
     return decorator
 
 
-def _cube_from_dict(d: dict[str, Any]) -> CubeMeta:
+def _parse_cube_dict(d: dict[str, Any]) -> CubeMeta:
+    """Build a CubeMeta from a dict WITHOUT touching the global registry."""
     measures = tuple(
         Measure(
             name=m["name"],
@@ -193,6 +195,9 @@ def _cube_from_dict(d: dict[str, Any]) -> CubeMeta:
             description=m.get("description"),
             format=m.get("format"),
             drill_members=tuple(m.get("drillMembers") or ()),
+            owner=m.get("owner"),
+            tags=tuple(m.get("tags") or ()),
+            status=m.get("status", "active"),
         )
         for m in (d.get("measures") or [])
     )
@@ -206,6 +211,9 @@ def _cube_from_dict(d: dict[str, Any]) -> CubeMeta:
             description=dd.get("description"),
             format=dd.get("format"),
             drill_members=tuple(dd.get("drillMembers") or ()),
+            owner=dd.get("owner"),
+            tags=tuple(dd.get("tags") or ()),
+            status=dd.get("status", "active"),
         )
         for dd in (d.get("dimensions") or [])
     )
@@ -240,8 +248,17 @@ def _cube_from_dict(d: dict[str, Any]) -> CubeMeta:
         description=d.get("description"),
         pre_aggregations=pre_aggs,
         security_columns=security_columns,
+        owner=d.get("owner"),
+        tags=tuple(d.get("tags") or ()),
+        status=d.get("status", "active"),
     )
     validate_cube(meta)
+    return meta
+
+
+def _cube_from_dict(d: dict[str, Any]) -> CubeMeta:
+    """Parse, validate and REGISTER a cube dict (used by the YAML loaders)."""
+    meta = _parse_cube_dict(d)
     registry.register(meta)
     return meta
 
@@ -251,6 +268,13 @@ def load_cube_file(path: str | Path) -> list[CubeMeta]:
     data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     cubes = (data or {}).get("cubes") or []
     return [_cube_from_dict(c) for c in cubes]
+
+
+def parse_cube_file(path: str | Path) -> list[CubeMeta]:
+    """Parse + validate cubes WITHOUT registering (for ``cubepy.diff`` etc.)."""
+    data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    cubes = (data or {}).get("cubes") or []
+    return [_parse_cube_dict(c) for c in cubes]
 
 
 def load_cube_dir(directory: str | Path) -> int:

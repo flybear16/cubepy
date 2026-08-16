@@ -102,6 +102,9 @@ def create_app(orchestrator: QueryOrchestrator | None = None) -> FastAPI:
     app.include_router(rest_router, prefix="/cubejs-api")
     app.include_router(ws_router, prefix="/cubejs-api")
     app.include_router(build_graphql_router(), prefix="/cubejs-api/graphql")
+
+    from cubepy.api.routes_platform import router as platform_router
+    app.include_router(platform_router, prefix="/cubepy")
     return app
 
 
