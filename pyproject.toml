@@ -1,5 +1,5 @@
 [project]
-name = "cubepy"
+name = "cubepy-semantic"
 version = "0.1.0"
 description = "Python semantic layer + permission layer + API layer, modelled on Cube.js (FastAPI + SQLAlchemy 2.0)."
 readme = "README.md"
