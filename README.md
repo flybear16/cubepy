@@ -3,6 +3,10 @@
 Python implementation of an analytical **semantic layer + permission layer + API layer**,
 modelled on [Cube.js](https://github.com/cube-js/cube) and tuned for Hologres/Postgres backends.
 
+> CubePy is an independent project, not affiliated with, sponsored by, or endorsed by
+> Cube Dev, Inc. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for licensing and
+> trademark attribution.
+
 Cube.js source (for cross-checking the contract) is vendored under `cube.js/` (shallow clone,
 gitignored). Porting notes live in `docs/06-cubejs-contract-notes.md`.
 
