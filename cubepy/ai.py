@@ -17,6 +17,8 @@ bundled — wire your own (OpenAI, DashScope, …)::
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from cubepy.schema.meta import CubeMeta
 from cubepy.schema.registry import SchemaRegistry
 
@@ -103,10 +105,19 @@ def system_prompt(
     cubes: list[CubeMeta] | SchemaRegistry | None = None,
     glossary: dict[str, str] | None = None,
 ) -> str:
-    """Drop-in system prompt: contract + catalog + glossary + example."""
+    """Drop-in system prompt: date anchor + contract + catalog + glossary + example.
+
+    The date anchor is load-bearing: without it the model resolves month-only
+    references ("8月") against its training-cutoff year and the query silently
+    returns empty (caught live by the M2 real-LLM acceptance run).
+    """
+    today = datetime.now(UTC).date().isoformat()
     parts = [
-        "You translate business questions into Cube Query JSON for a semantic "
-        "layer.\n\n" + QUERY_CONTRACT,
+        "You translate business questions into Cube Query JSON for a semantic layer.",
+        f"Today's date is {today} (UTC). Resolve any absolute or month/quarter-"
+        'only time reference (e.g. "8月", "Q3") against THIS date\'s year, '
+        'or prefer a relative dateRange ("this month", "last 30 days").',
+        QUERY_CONTRACT,
         build_context(cubes),
         glossary_prompt(glossary),
         '\nExample — "每个客户的总销售额，按金额降序，前10":\n'

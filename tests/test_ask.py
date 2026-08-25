@@ -105,6 +105,10 @@ async def test_ask_prompt_contains_catalog_and_glossary() -> None:
     assert "## Catalog" in system
     assert "Orders.revenue" in system
     assert "## Glossary" in system  # hardcoded term table injected (F-E1.3)
+    # Date anchor (M2 real-LLM acceptance caught the training-cutoff year bug)
+    from datetime import UTC, datetime
+
+    assert f"Today's date is {datetime.now(UTC).date().isoformat()}" in system
 
 
 # --- security red line (F-E1.2): LLM sees only what ctx may query -------------

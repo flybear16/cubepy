@@ -19,7 +19,8 @@ dependencies = [
     "pyjwt[crypto]>=2.8",
     "python-dateutil>=2.9",
     "websockets>=12",
-    "httpx>=0.27",              # M2 ask layer: OpenAI-compatible LLM client
+    "httpx[socks]>=0.27",      # M2 ask layer: OpenAI-compatible LLM client
+                               # (socks extra: honor SOCKS ALL_PROXY envs)
 ]
 
 [project.optional-dependencies]

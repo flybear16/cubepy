@@ -37,6 +37,7 @@ def _ctx(**kw: object) -> SecurityContext:
 
 # --- SecurityContext.from_jwt -------------------------------------------------
 
+
 def test_from_jwt_maps_known_claims_and_keeps_custom() -> None:
     token = create_token(
         {"sub": "u1", "role": "admin", "dept": "sales", "tid": "t9", "region": "APAC"},
@@ -65,10 +66,14 @@ def test_from_jwt_rs256_accepts_and_rejects() -> None:
         serialization.PrivateFormat.PKCS8,
         serialization.NoEncryption(),
     )
-    pub_pem = priv.public_key().public_bytes(
-        serialization.Encoding.PEM,
-        serialization.PublicFormat.SubjectPublicKeyInfo,
-    ).decode()
+    pub_pem = (
+        priv.public_key()
+        .public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
 
     token = pyjwt.encode({"sub": "u1", "role": "admin"}, priv_pem, algorithm="RS256")
     ctx = SecurityContext.from_jwt(token, secret=pub_pem, algorithm="RS256")
@@ -77,9 +82,11 @@ def test_from_jwt_rs256_accepts_and_rejects() -> None:
 
     # A different keypair must reject the token.
     other = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    other_pub = other.public_key().public_bytes(
-        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
-    ).decode()
+    other_pub = (
+        other.public_key()
+        .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+        .decode()
+    )
     with pytest.raises(pyjwt.PyJWTError):
         SecurityContext.from_jwt(token, secret=other_pub, algorithm="RS256")
 
@@ -97,6 +104,7 @@ async def test_auth_rs256_without_public_key_returns_500(monkeypatch: pytest.Mon
 
 
 # --- PermissionBuilder.apply_row_level ---------------------------------------
+
 
 def _orders_cube() -> CubeMeta:
     @cube(
@@ -135,15 +143,14 @@ def test_rls_quotes_escaped_to_prevent_injection() -> None:
         count = measure(None, MeasureType.COUNT)
 
     meta = registry.get("Orders")
-    conds = PermissionBuilder.apply_row_level(
-        meta, _ctx(role="manager", department="x' OR '1'='1")
-    )
+    conds = PermissionBuilder.apply_row_level(meta, _ctx(role="manager", department="x' OR '1'='1"))
     joined = " AND ".join(conds)
     assert "OR '1'='1'" not in joined
     assert "''" in joined  # escaped
 
 
 # --- PermissionBuilder.filter_fields -----------------------------------------
+
 
 def test_filter_fields_honours_shown() -> None:
     @cube("Orders", "SELECT * FROM orders")
@@ -175,6 +182,7 @@ def test_cube_visibility() -> None:
 
 # --- FastAPI dependency -------------------------------------------------------
 
+
 def _app() -> FastAPI:
     app = FastAPI()
 
@@ -195,7 +203,11 @@ async def test_dep_rejects_missing_and_bad_token() -> None:
 
 async def test_dep_accepts_valid_bearer() -> None:
     app = _app()
-    token = create_token({"sub": "u1", "role": "manager"}, secret="dev-secret-change-me")
+    # settings.jwt_secret (not the hardcoded default): a local .env overriding
+    # CUBEPY_JWT_SECRET must not break this test.
+    from cubepy.config import settings
+
+    token = create_token({"sub": "u1", "role": "manager"}, secret=settings.jwt_secret)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         r = await ac.get("/whoami", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 200
