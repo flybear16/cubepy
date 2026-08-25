@@ -3,10 +3,15 @@ testcontainers Postgres, on http://127.0.0.1:8765.
 
 Run:  uv run python run_server.py
 Stop: Ctrl+C  (container + engine + redis are torn down).
+
+Ask layer (M2): set CUBEPY_LLM_API_KEY to wire the real OpenAI-compatible
+LLM (DeepSeek by default); without a key the demo mounts a deterministic
+FakeLLM so /cubepy/v1/ask still answers the seeded sample questions.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import redis.asyncio as redis_asyncio
@@ -18,12 +23,44 @@ from testcontainers.community.postgres import PostgresContainer
 from cubepy.api.app import create_app
 from cubepy.cache.redis_cache import RedisCache
 from cubepy.config import settings
+from cubepy.llm import FakeLLM, OpenAICompatibleLLM
 from cubepy.orchestrator.executor import AsyncEngineExecutor
 from cubepy.orchestrator.orchestrator import QueryOrchestrator
 from cubepy.samples.orders_schema import register_samples
 
 SEED = Path(__file__).resolve().parent / "cubepy" / "samples" / "seed.sql"
 PORT = 8765
+
+_FAKE_RULES = {
+    "收入": {"measures": ["Orders.revenue"]},
+    "销售额": {"measures": ["Orders.revenue"]},
+    "订单数": {"measures": ["Orders.count"]},
+    "状态": {
+        "measures": ["Orders.revenue", "Orders.count"],
+        "dimensions": ["Orders.status"],
+    },
+}
+
+
+def _demo_llm() -> FakeLLM | OpenAICompatibleLLM:
+    """Real LLM when a key is present; keyword-matching FakeLLM otherwise."""
+    if settings.llm_api_key:
+        return OpenAICompatibleLLM()
+    print("[cubepy] ask layer: no CUBEPY_LLM_API_KEY -> FakeLLM demo mode")
+
+    async def responder(messages: list[dict[str, str]]) -> str:
+        question = messages[-1]["content"]
+        if "数据解读助手" in messages[0]["content"]:  # LLM#2: interpret
+            return "（FakeLLM 演示模式）见下方数据。"
+        for keyword, query in _FAKE_RULES.items():  # LLM#1: NL -> query JSON
+            if keyword in question:
+                return json.dumps(query, ensure_ascii=False)
+        return json.dumps(
+            {"notAnswerable": True, "reason": "演示模式只认收入/销售额/订单数/状态"},
+            ensure_ascii=False,
+        )
+
+    return FakeLLM(responder=responder)
 
 
 def main() -> None:
@@ -47,10 +84,11 @@ def main() -> None:
     orch = QueryOrchestrator(
         RedisCache(redis_client), AsyncEngineExecutor(engine), settings=settings
     )
-    app = create_app(orchestrator=orch)
+    app = create_app(orchestrator=orch, llm=_demo_llm())
 
     print(f"\n[cubepy] Postgres : {async_url}")
     print(f"[cubepy] Redis    : {settings.redis_url}")
+    print("[cubepy] Ask      : POST /cubepy/v1/ask  (FakeLLM demo or CUBEPY_LLM_*)")
     print(f"[cubepy] Listening: http://127.0.0.1:{PORT}  (docs at /docs)\n")
 
     try:

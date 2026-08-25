@@ -20,7 +20,7 @@ from __future__ import annotations
 from cubepy.schema.meta import CubeMeta
 from cubepy.schema.registry import SchemaRegistry
 
-__all__ = ["build_context", "query_contract", "system_prompt", "members_index"]
+__all__ = ["build_context", "glossary_prompt", "query_contract", "system_prompt", "members_index"]
 
 QUERY_CONTRACT = """\
 Query JSON contract (return ONLY this JSON, no prose):
@@ -43,12 +43,16 @@ Rules:
 - Use ONLY member paths listed in the catalog below; never invent names.
 - Joins are automatic: any cube referenced by measures/dimensions is joined
   along declared relationships — no join config needed.
-- Relative dateRanges ("last 30 days") are supported; timezone default UTC."""
+- Relative dateRanges ("last 30 days") are supported; timezone default UTC.
+- If the question cannot be answered from the catalog (no relevant members,
+  or it is not a data question), return {"notAnswerable": true, "reason":
+  "<one short sentence>"} instead of a query."""
 
 
 def _cubes(cubes: list[CubeMeta] | SchemaRegistry | None) -> list[CubeMeta]:
     if cubes is None:
         from cubepy.schema.registry import registry
+
         return registry.all()
     if isinstance(cubes, SchemaRegistry):
         return cubes.all()
@@ -82,15 +86,34 @@ def query_contract() -> str:
     return QUERY_CONTRACT
 
 
-def system_prompt(cubes: list[CubeMeta] | SchemaRegistry | None = None) -> str:
-    """Drop-in system prompt: contract + catalog + example."""
-    return (
+def glossary_prompt(glossary: dict[str, str] | None = None) -> str:
+    """Business-term glossary section for the system prompt (F-E1.3).
+
+    ``glossary`` maps a business phrase to its precise meaning (member path +
+    口径). Hardcoded per domain for the M2 POC — M3 lifts it into config.
+    """
+    if not glossary:
+        return ""
+    lines = ["## Glossary (business term -> precise meaning, prefer these mappings)"]
+    lines += [f"- {term}: {meaning}" for term, meaning in glossary.items()]
+    return "\n".join(lines)
+
+
+def system_prompt(
+    cubes: list[CubeMeta] | SchemaRegistry | None = None,
+    glossary: dict[str, str] | None = None,
+) -> str:
+    """Drop-in system prompt: contract + catalog + glossary + example."""
+    parts = [
         "You translate business questions into Cube Query JSON for a semantic "
-        "layer.\n\n" + QUERY_CONTRACT + "\n\n" + build_context(cubes)
-        + '\n\nExample — "每个客户的总销售额，按金额降序，前10":\n'
+        "layer.\n\n" + QUERY_CONTRACT,
+        build_context(cubes),
+        glossary_prompt(glossary),
+        '\nExample — "每个客户的总销售额，按金额降序，前10":\n'
         '{"measures":["Orders.revenue"],"dimensions":["Customers.name"],'
-        '"order":{"Orders.revenue":"desc"},"limit":10}'
-    )
+        '"order":{"Orders.revenue":"desc"},"limit":10}',
+    ]
+    return "\n\n".join(p for p in parts if p)
 
 
 def members_index(cubes: list[CubeMeta] | SchemaRegistry | None = None) -> list[str]:

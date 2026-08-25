@@ -47,9 +47,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.engine = engine
         app.state.redis = redis_client
         if settings.preagg_enabled:
-            scheduler = PreAggScheduler(
-                executor, default_every=settings.default_refresh_every
-            )
+            scheduler = PreAggScheduler(executor, default_every=settings.default_refresh_every)
             await scheduler.start()
             app.state.scheduler = scheduler
     yield
@@ -64,9 +62,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await redis_client.aclose()
 
 
-def create_app(orchestrator: QueryOrchestrator | None = None) -> FastAPI:
+def create_app(
+    orchestrator: QueryOrchestrator | None = None,
+    llm: object | None = None,
+) -> FastAPI:
     app = FastAPI(title="CubePy API", version="0.1.0", lifespan=lifespan)
     app.state.orchestrator = orchestrator
+    app.state.llm = llm
 
     @app.get("/readyz")
     async def readyz() -> JSONResponse:
@@ -108,7 +110,15 @@ def create_app(orchestrator: QueryOrchestrator | None = None) -> FastAPI:
     app.include_router(build_graphql_router(), prefix="/cubejs-api/graphql")
 
     from cubepy.api.routes_platform import router as platform_router
+
     app.include_router(platform_router, prefix="/cubepy")
+
+    # M2 ask layer: mounted only when the feature flag is on, or a test
+    # injected an LLM explicitly (key-less FakeLLM demos ride the same seam).
+    if settings.ask_enabled or llm is not None:
+        from cubepy.api.routes_ask import router as ask_router
+
+        app.include_router(ask_router, prefix="/cubepy")
     return app
 
 

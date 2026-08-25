@@ -24,6 +24,7 @@ gitignored). Porting notes live in `docs/06-cubejs-contract-notes.md`.
 | GraphQL (Strawberry, `/cubejs-api/graphql`) | ✅ |
 | Async client SDK (`client/`, REST + WS subscribe) | ✅ |
 | DuckDB data source (sync engine on a worker thread) | ✅ |
+| AI ask layer (`POST /cubepy/v1/ask`, OpenAI-compatible LLM, ctx-scoped prompt + RLS) | ✅ MVP (off by default) |
 | Real Postgres integration tests (testcontainers) | ✅ |
 
 **Pre-aggregation** is a same-DB materialised-rollup + aggregate-navigation MVP
@@ -118,6 +119,31 @@ uv run pytest                       # unit + integration (testcontainers Postgre
 uv run pytest -m "not integration"  # skip the container tests
 CUBEPY_TEST_PG_DSN=... uv run pytest  # use a real/local Postgres instead of a container
 ```
+
+## AI ask layer (M2 POC)
+
+自然语言问数：`POST /cubepy/v1/ask`，LLM 把业务问题翻译成 Cube Query，走同一条
+`/load` 链路（缓存/预聚合/RLS 全部复用），再生成一句话洞察。
+
+```
+POST /cubepy/v1/ask   {"question": "已发货收入多少？"}
+→ {"answer": "已发货收入共 40。", "data": [...], "query": {...}, "auditId": "..."}
+```
+
+安全模型：**LLM 只看调用者 SecurityContext 可见的 cube**（prompt 目录 =
+`cube_visible` 过滤结果），执行用同一个 ctx 注入 RLS——LLM 甚至"叫不出"越权成员
+的名字。LLM 输出按不可信输入处理：成员白名单 + `Query.parse` 双校验，失败走一轮
+修复重试，仍失败 400（fail-closed）。无关问题返回 `notAnswerable`→400；空结果
+200 + "没有数据"；LLM 不可用 503；每次问答写 JSONL 审计。
+
+```bash
+# OpenAI 兼容：DeepSeek / DashScope(qwen) / OpenAI / vLLM 均为纯配置
+export CUBEPY_ASK_ENABLED=true
+export CUBEPY_LLM_API_KEY=sk-...            # 默认 https://api.deepseek.com/v1 + deepseek-chat
+```
+
+无 key 演示：`uv run python run_server.py` 自动挂 FakeLLM，`/cubepy/v1/ask` 照常可问
+（收入/销售额/订单数/状态）。术语表 MVP 硬编码在 `cubepy/samples/glossary.py`。
 
 ## Metrics platform (v0.2)
 

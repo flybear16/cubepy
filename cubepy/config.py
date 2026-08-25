@@ -4,9 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_prefix="CUBEPY_", env_file=".env", extra="ignore"
-    )
+    model_config = SettingsConfigDict(env_prefix="CUBEPY_", env_file=".env", extra="ignore")
 
     # Auth
     jwt_secret: str = "dev-secret-change-me"
@@ -30,6 +28,20 @@ class Settings(BaseSettings):
     # the matcher is fail-closed, so flipping this on never yields wrong results,
     # only falls back to the base cube if a rollup is missing.
     preagg_enabled: bool = False
+
+    # AI ask layer (M2). OpenAI-compatible endpoint: DeepSeek / DashScope(qwen) /
+    # OpenAI / local vLLM are pure config, no code change.
+    llm_base_url: str = "https://api.deepseek.com/v1"
+    llm_api_key: str | None = None
+    llm_model: str = "deepseek-chat"
+    llm_timeout_seconds: float = 30.0
+    # Feature flag: the /cubepy/v1/ask router is only mounted when enabled
+    # (or when a test injects an LLM explicitly).
+    ask_enabled: bool = False
+    # Second LLM pass: one-line insight over the result rows (degrades silently).
+    ask_interpret: bool = True
+    # Append-only JSONL audit trail for every ask (question/query/rows/latency).
+    ask_audit_log: str | None = None
 
     log_level: str = "INFO"
 
