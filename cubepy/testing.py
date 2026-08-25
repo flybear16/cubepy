@@ -32,6 +32,7 @@ from typing import Any
 
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
+from sqlalchemy.sql.elements import TextClause
 
 from cubepy.security.context import SecurityContext
 from cubepy.sqlgen.builder import SQLBuilder

@@ -166,3 +166,50 @@ def test_load_cube_dir_counts_files(tmp_path) -> None:
         "cubes:\n  - {name: B, sql: b, measures: [{name: c, type: count}]}"
     )
     assert load_cube_dir(tmp_path) == 2
+
+
+def test_missing_member_lookup_raises_keyerror() -> None:
+    @cube("Orders", "orders")
+    class _O:
+        c = measure(None, MeasureType.COUNT)
+        status = dimension("status", "string")
+        active = segment("status = 'active'")
+
+    meta = registry.get("Orders")
+    with pytest.raises(KeyError):
+        meta.dimension("nope")
+    with pytest.raises(KeyError):
+        meta.segment("nope")
+
+
+def test_registry_names() -> None:
+    @cube("Orders", "orders")
+    class _O:
+        c = measure(None, MeasureType.COUNT)
+
+    @cube("Users", "users")
+    class _U:
+        c = measure(None, MeasureType.COUNT)
+
+    assert set(registry.names()) == {"Orders", "Users"}
+
+
+def test_join_instance_accepted_in_decorator() -> None:
+    from cubepy.schema.meta import Join
+
+    @cube(
+        "Orders",
+        "orders",
+        joins={
+            "Users": Join(
+                relationship=RelationshipType.BELONGS_TO,
+                sql="Orders.user_id = Users.id",
+            )
+        },
+    )
+    class _O:
+        c = measure(None, MeasureType.COUNT)
+
+    join = registry.get("Orders").joins["Users"]
+    assert join.relationship is RelationshipType.BELONGS_TO
+    assert join.sql == "Orders.user_id = Users.id"

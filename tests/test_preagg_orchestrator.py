@@ -122,3 +122,28 @@ async def test_disabled_never_routes_to_rollup() -> None:
     assert exe.session_sql is None  # execute_with_session never called
     assert exe.exec_calls == 1
     assert env["usedPreAggregations"] == []
+
+
+class _PlainExecutor:
+    """No execute_with_session: exercises the orchestrator's plain-execute path."""
+
+    def __init__(self, rows: list[dict]) -> None:
+        self.rows = rows
+        self.last_stmt: TextClause | None = None
+
+    async def execute(self, stmt: TextClause) -> list[dict]:
+        self.last_stmt = stmt
+        return [dict(r) for r in self.rows]
+
+
+async def test_enabled_routes_to_rollup_with_plain_executor() -> None:
+    exe = _PlainExecutor([{"Orders.revenue": 5.0}])
+    orch = QueryOrchestrator(
+        RedisCache(fakeredis.FakeAsyncRedis()),
+        exe,
+        settings=Settings(preagg_enabled=True),
+    )
+    env = await orch.load(Query.parse(_QUERY), _ctx())
+    assert "cubepy_rollup_orders_daily" in str(exe.last_stmt)
+    assert env["usedPreAggregations"] == [{"tableName": "cubepy_rollup_orders_daily"}]
+    assert env["data"] == [{"Orders.revenue": 5.0}]

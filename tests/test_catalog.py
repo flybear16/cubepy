@@ -49,6 +49,10 @@ cubes:
     dimensions:
       - {name: id, sql: id, type: number, primaryKey: true}
       - {name: name, sql: name, type: string}
+  - name: weird
+    sql: SELECT 1
+    measures:
+      - {name: one, type: count}
 """,
         encoding="utf-8",
     )
@@ -61,6 +65,9 @@ def test_table_of():
     assert table_of("SELECT * FROM public.post") == "public.post"
     assert table_of("posts") == "posts"
     assert table_of("") is None
+    # No FROM clause and not a bare identifier -> no source table.
+    assert table_of("SELECT 1") is None
+    assert table_of("orders o") is None
 
 
 def test_columns_ref_filters_keywords_and_functions():
@@ -90,6 +97,12 @@ def test_catalog_structure_and_governance(cubes):
     assert calc["columns"] == ["is_published", "featured"]
 
 
+def test_build_catalog_accepts_registry_instance(cubes):
+    cat = build_catalog(registry)  # a SchemaRegistry, not the default singleton
+    assert any(c["name"] == "posts" for c in cat["cubes"])
+    assert any(c["name"] == "weird" for c in cat["cubes"])
+
+
 def test_lineage_edges(cubes):
     g = lineage()
     edges = {(e["from"], e["to"]) for e in g["edges"]}
@@ -110,6 +123,9 @@ def test_impact_table_and_column(cubes):
         {"cube": "posts", "join": "users", "kind": "join",
          "reason": "join ON references author_id", "status": "active"}
     ]
+
+    # a cube with no derivable source table never matches an impact query
+    assert impact("weird")["impacted"] == []
 
 
 def test_api_catalog_and_lineage(cubes):

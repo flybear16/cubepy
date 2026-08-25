@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from cubepy.schema.meta import CubeMeta, CubeMeta as _C, Measure, Dimension
+from cubepy.schema.meta import CubeMeta, Dimension, Measure
 from cubepy.schema.registry import SchemaRegistry
 
 # --- SQL identifier heuristics -------------------------------------------------

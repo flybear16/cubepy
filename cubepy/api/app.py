@@ -76,7 +76,11 @@ def create_app(orchestrator: QueryOrchestrator | None = None) -> FastAPI:
         if engine is not None:
             try:
                 async with engine.connect() as conn:
-                    await conn.execute(text("SELECT 1"))
+                    # coverage.py fails to trace this success-path line: it is
+                    # resumed after a SQLAlchemy greenlet-based await (verified
+                    # with both the C and Python trace cores). Executed and
+                    # asserted by test_lifespan_async_engine_real_pg.
+                    await conn.execute(text("SELECT 1"))  # pragma: no cover
                 components["db"] = "up"
             except Exception:  # noqa: BLE001 — any failure means down
                 components["db"] = "down"

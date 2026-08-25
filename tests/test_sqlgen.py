@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import create_engine
 
-from cubepy.schema.loader import cube, dimension, measure
+from cubepy.schema.loader import cube, dimension, measure, segment
 from cubepy.schema.meta import MeasureType
 from cubepy.schema.registry import registry
 from cubepy.security.context import SecurityContext
@@ -320,3 +320,199 @@ def test_unjoined_cube_raises() -> None:
     # Products is not joined to Orders in the fixture.
     with pytest.raises(ValueError, match="not joined"):
         _sql({"measures": ["Orders.revenue"], "dimensions": ["Products.name"]})
+
+
+# --- remaining branch coverage ------------------------------------------------
+
+
+def test_segment_query_adds_segment_where() -> None:
+    registry.clear()
+
+    @cube("Orders", "orders")
+    class _OSeg:
+        revenue = measure("amount", MeasureType.SUM)
+        active = segment("status = 'active'")
+
+    sql = _sql({"measures": ["Orders.revenue"], "segments": ["Orders.active"]})
+    assert "status = 'active'" in sql
+
+
+def test_count_measure_with_explicit_sql() -> None:
+    registry.clear()
+
+    @cube("Orders", "orders")
+    class _O:
+        c = measure("user_id", MeasureType.COUNT)
+
+    assert "count(user_id)" in _sql({"measures": ["Orders.c"]})
+
+
+def test_calculated_measure_without_formula_raises() -> None:
+    registry.clear()
+
+    @cube("Orders", "orders")
+    class _O:
+        bad = measure(None, MeasureType.CALCULATED)
+
+    with pytest.raises(ValueError, match="no formula"):
+        _sql({"measures": ["Orders.bad"]})
+
+
+def test_calculated_measure_referencing_calculated_raises() -> None:
+    registry.clear()
+
+    @cube("Orders", "orders")
+    class _O:
+        base = measure("amount", MeasureType.SUM)
+        a = measure(None, MeasureType.CALCULATED, formula="{base} * 2")
+        b = measure(None, MeasureType.CALCULATED, formula="{a} + 1")
+
+    with pytest.raises(ValueError, match="nesting is not supported"):
+        _sql({"measures": ["Orders.b"]})
+
+
+def test_cube_with_subquery_sql_wraps_in_parens() -> None:
+    registry.clear()
+
+    @cube("Orders", "select * from orders where active")
+    class _O:
+        revenue = measure("amount", MeasureType.SUM)
+
+    sql = _sql({"measures": ["Orders.revenue"]})
+    assert "FROM (select * from orders where active) AS orders" in sql
+
+
+def test_empty_query_references_no_cubes() -> None:
+    with pytest.raises(ValueError, match="references no cubes"):
+        _sql({})
+
+
+def test_and_filter_compiles() -> None:
+    sql = _sql(
+        {
+            "measures": ["Orders.revenue"],
+            "filters": [
+                {
+                    "and": [
+                        {"member": "Orders.status", "operator": "equals", "values": ["a"]},
+                        {"member": "Orders.status", "operator": "equals", "values": ["b"]},
+                    ]
+                }
+            ],
+        }
+    )
+    assert "(status = 'a' AND status = 'b')" in sql
+
+
+def test_filter_without_member_raises() -> None:
+    with pytest.raises(ValueError, match="requires member and operator"):
+        _sql({"measures": ["Orders.revenue"], "filters": [{"values": ["x"]}]})
+
+
+def test_window_measure_without_sql_raises() -> None:
+    registry.clear()
+
+    @cube("Orders", "orders")
+    class _O:
+        rt = measure(None, MeasureType.RUNNING_TOTAL)
+
+    with pytest.raises(ValueError, match="must reference a sibling measure"):
+        _sql({"measures": ["Orders.rt"]})
+
+
+def test_window_measure_unknown_ref_raises() -> None:
+    registry.clear()
+
+    @cube("Orders", "orders")
+    class _O:
+        rt = measure("nope", MeasureType.RUNNING_TOTAL)
+        status = dimension("status", "string")
+
+    with pytest.raises(ValueError, match="references unknown"):
+        _sql({"measures": ["Orders.rt"], "dimensions": ["Orders.status"]})
+
+
+def test_window_measure_referencing_window_raises() -> None:
+    registry.clear()
+
+    @cube("Orders", "orders")
+    class _O:
+        rt = measure("amount", MeasureType.RUNNING_TOTAL)
+        rank = measure("rt", MeasureType.RANK)
+        status = dimension("status", "string")
+
+    with pytest.raises(ValueError, match="may only reference a concrete aggregate"):
+        _sql({"measures": ["Orders.rank"], "dimensions": ["Orders.status"]})
+
+
+def test_rank_and_row_number_window_functions() -> None:
+    registry.clear()
+
+    @cube("Orders", "orders")
+    class _O:
+        revenue = measure("amount", MeasureType.SUM)
+        rank = measure("revenue", MeasureType.RANK)
+        rn = measure("revenue", MeasureType.ROW_NUMBER)
+        created_at = dimension("created_at", "time")
+
+    sql = _sql(
+        {
+            "measures": ["Orders.rank", "Orders.rn"],
+            "timeDimensions": [{"dimension": "Orders.created_at", "granularity": "day"}],
+        }
+    )
+    assert 'rank() OVER (ORDER BY sub."Orders.created_at")' in sql
+    assert 'row_number() OVER (ORDER BY sub."Orders.created_at")' in sql
+
+
+def test_window_query_with_plain_measures_and_dimensions() -> None:
+    registry.clear()
+
+    @cube("Orders", "orders")
+    class _O:
+        revenue = measure("amount", MeasureType.SUM)
+        cumulative = measure("revenue", MeasureType.RUNNING_TOTAL)
+        status = dimension("status", "string")
+        created_at = dimension("created_at", "time")
+
+    sql = _sql(
+        {
+            "measures": ["Orders.revenue", "Orders.cumulative"],
+            "dimensions": ["Orders.status"],
+            "timeDimensions": [{"dimension": "Orders.created_at", "granularity": "day"}],
+        }
+    )
+    # Non-window members are re-selected from the inner query in the outer wrapper.
+    assert 'sub."Orders.revenue" AS "Orders.revenue"' in sql
+    assert 'sub."Orders.status" AS "Orders.status"' in sql
+    assert (
+        'sum(sub."Orders.revenue") OVER '
+        '(ORDER BY sub."Orders.created_at", sub."Orders.status")' in sql
+    )
+
+
+def test_invisible_cube_fails_closed() -> None:
+    registry.clear()
+
+    @cube("Orders", "orders", shown=lambda ctx: False)
+    class _O:
+        revenue = measure("amount", MeasureType.SUM)
+
+    with pytest.raises(ValueError, match="not available"):
+        _sql({"measures": ["Orders.revenue"]})
+
+
+# --- query model --------------------------------------------------------------
+
+
+def test_filter_parse_direct() -> None:
+    from cubepy.sqlgen.query import Filter
+
+    f = Filter.parse({"member": "Orders.status", "operator": "equals", "values": ["x"]})
+    assert f.operator == "equals"
+    assert f.values == ["x"]
+
+
+def test_order_dict_normalisation() -> None:
+    sql = _sql({"measures": ["Orders.revenue"], "order": {"Orders.revenue": "desc"}})
+    assert 'ORDER BY "Orders.revenue" DESC' in sql

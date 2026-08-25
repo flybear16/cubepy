@@ -162,3 +162,17 @@ async def test_client_subscribe_yields_pushes(server: int) -> None:
         await gen.aclose()
     assert first["data"] == [{"Orders.revenue": 1.0}]
     assert second["data"] == [{"Orders.revenue": 2.0}]
+
+
+async def test_client_subscribe_with_token_factory(server: int) -> None:
+    # subscribe resolves the token via the async factory (no static token).
+    port = server
+
+    async def factory() -> str:
+        return _token()
+
+    async with CubePyClient(f"http://127.0.0.1:{port}", token_factory=factory) as c:
+        gen = c.subscribe({"measures": ["Orders.revenue"]}, every=0.05)
+        first = await gen.__anext__()
+        await gen.aclose()
+    assert first["data"] == [{"Orders.revenue": 1.0}]

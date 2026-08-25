@@ -93,3 +93,31 @@ async def test_graphql_dynamic_per_cube_field() -> None:
         )
     assert r.status_code == 200, r.text
     assert r.json()["data"]["orders"] == [{"revenue": 7.0}]
+
+
+async def test_graphql_per_cube_where_and_order_by() -> None:
+    # where/orderBy are JSON scalars; member paths contain dots, so they must
+    # arrive via variables (GraphQL object keys can't be quoted strings).
+    async with _client([{"Orders.revenue": 7.0}]) as ac:
+        r = await ac.post(
+            "/cubejs-api/graphql",
+            headers={**_auth(), "Content-Type": "application/json"},
+            json={
+                "query": (
+                    "query Q($where: JSON, $order: JSON) "
+                    "{ orders(where: $where, orderBy: $order) { revenue } }"
+                ),
+                "variables": {
+                    "where": {"member": "Orders.revenue", "operator": "gt", "values": [1]},
+                    "order": {"Orders.revenue": "desc"},
+                },
+            },
+        )
+    assert r.status_code == 200, r.text
+    assert r.json()["data"]["orders"] == [{"revenue": 7.0}]
+
+
+def test_selected_members_handles_missing_info() -> None:
+    from cubepy.api.graphql import _selected_members
+
+    assert _selected_members(None) == []

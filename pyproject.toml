@@ -66,3 +66,12 @@ target-version = "py311"
 select = ["E", "F", "I", "UP", "B"]
 # B008: FastAPI's canonical `Depends`/`Header`/`Query` in argument defaults.
 ignore = ["E501", "B008"]
+
+[tool.coverage.run]
+# Measure/report cubepy source only (test files excluded automatically).
+source = ["cubepy"]
+
+[tool.coverage.report]
+show_missing = true
+# Line coverage floor; `coverage run -m pytest` fails below this.
+fail_under = 95

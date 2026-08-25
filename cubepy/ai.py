@@ -17,8 +17,6 @@ bundled — wire your own (OpenAI, DashScope, …)::
 
 from __future__ import annotations
 
-from typing import Any
-
 from cubepy.schema.meta import CubeMeta
 from cubepy.schema.registry import SchemaRegistry
 

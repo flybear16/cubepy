@@ -97,3 +97,52 @@ async def test_start_with_no_rollups_is_a_noop() -> None:
     sched = PreAggScheduler(object())  # type: ignore[arg-type]
     await sched.start(build_on_start=False)  # must not raise
     sched.shutdown()
+
+
+async def test_refresh_loop_ticks_and_recovers_after_failure(monkeypatch) -> None:
+    """The per-rollup sleep loop refreshes on every tick and logs+retries failures."""
+    import asyncio
+
+    import cubepy.scheduler as sched_mod
+
+    calls: list[str] = []
+
+    class _Stub:
+        async def build(self, cube, pa):
+            calls.append(pa.name)
+            if len(calls) == 1:
+                raise RuntimeError("boom")
+
+    @cube(
+        "Orders",
+        "orders",
+        pre_aggregations=[
+            PreAggregation("daily", ("Orders.revenue",), (), "Orders.created_at", "day")
+        ],
+    )
+    class _O:
+        revenue = measure("amount", MeasureType.SUM)
+        created_at = dimension("created_at", "time")
+
+    real_sleep = asyncio.sleep
+
+    async def _fast_sleep(_seconds: float) -> None:
+        await real_sleep(0)  # yield without waiting the real interval
+
+    monkeypatch.setattr(sched_mod.asyncio, "sleep", _fast_sleep)
+
+    sched = PreAggScheduler(object())  # type: ignore[arg-type]
+    sched._service = _Stub()
+    cube_meta = registry.get("Orders")
+    pa = cube_meta.pre_aggregations[0]
+
+    task = asyncio.create_task(sched._loop(cube_meta, pa))
+    for _ in range(500):
+        if len(calls) >= 2:  # tick 1 failed, tick 2 succeeded
+            break
+        await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert len(calls) >= 2  # the failure was logged, the loop kept going

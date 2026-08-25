@@ -113,7 +113,9 @@ def diff_cubes(old: list[CubeMeta], new: list[CubeMeta]) -> list[Change]:
 
         for m in sorted(om.keys() & nm.keys()):
             o, n = om[m][1], nm[m][1]
-            if str(o.type) != str(n.type):
+            # Segments have no ``type``; only measures/dimensions are typed.
+            otype, ntype = getattr(o, "type", None), getattr(n, "type", None)
+            if otype is not None and ntype is not None and str(otype) != str(ntype):
                 changes.append(
                     Change("breaking", "type-changed", name, m,
                            f"{o.type} -> {n.type}")
@@ -189,4 +191,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main())  # pragma: no cover - exercised via `python -m cubepy.diff` in tests

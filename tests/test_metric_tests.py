@@ -6,7 +6,7 @@ from cubepy.schema.loader import load_cube_file
 from cubepy.schema.registry import registry
 from cubepy.testing import assert_query, fixture_engine, render_query
 
-duckdb_engine = pytest.importorskip("duckdb.engine")
+duckdb_engine = pytest.importorskip("duckdb_engine")
 
 
 SCHEMA = """
@@ -112,3 +112,29 @@ def test_failure_message_includes_sql():
 def test_render_query_smoke():
     sql = str(render_query({"measures": ["orders.order_count"]}))
     assert "count(*)" in sql.lower()
+
+
+def test_fixture_engine_empty_table_raises():
+    with pytest.raises(ValueError, match="at least one row"):
+        fixture_engine({"t": []})
+
+
+def test_harness_type_helpers():
+    # _json_safe: Decimal / datetime / date -> JSON-safe values; everything else
+    # passes through unchanged.
+    from datetime import date, datetime
+    from decimal import Decimal
+
+    from cubepy import testing as T
+
+    assert T._json_safe(Decimal("1.5")) == 1.5
+    assert T._json_safe(datetime(2026, 8, 1, 10, 0)) == "2026-08-01T10:00:00"
+    assert T._json_safe(date(2026, 8, 1)) == "2026-08-01"
+    assert T._json_safe("x") == "x"
+
+    # _col_type: empty / boolean / int / float / fallback.
+    assert T._col_type([]) == "VARCHAR"
+    assert T._col_type([True, False]) == "BOOLEAN"
+    assert T._col_type([1, 2, 3]) == "BIGINT"
+    assert T._col_type([1.5, 2.0]) == "DOUBLE"
+    assert T._col_type(["a", "b"]) == "VARCHAR"

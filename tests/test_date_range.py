@@ -80,3 +80,10 @@ def test_default_now_is_timezone_aware() -> None:
     # When `now` is omitted, the fallback datetime.now(tz) is tz-aware.
     start, _ = resolve_date_range("today", tz="UTC")
     assert start.tzinfo is not None
+
+
+def test_non_zero_padded_iso_date_falls_back_to_strptime() -> None:
+    # "2026-8-1" fails datetime.fromisoformat but parses via the %Y-%m-%d fallback.
+    start, end = resolve_date_range("2026-8-1", now=NOW, tz="UTC")
+    assert start == _d(2026, 8, 1)
+    assert start <= end

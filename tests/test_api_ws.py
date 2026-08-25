@@ -168,3 +168,52 @@ def test_ws_unsubscribe_then_resubscribe() -> None:
             second = ws.receive_json()
     assert first["messageId"] == "1"
     assert second["messageId"] == "2"
+
+
+def test_ws_non_json_auth_message_closes() -> None:
+    app = _app(_FixedExecutor([{"Orders.revenue": 1}]))
+    with TestClient(app) as client:
+        with client.websocket_connect("/cubejs-api/v1/subscribe") as ws:
+            ws.send_text("not-json")
+            with pytest.raises((WebSocketDisconnect, Exception)):
+                ws.receive_json()
+
+
+def test_ws_subscribe_parse_error_sends_error() -> None:
+    # query fails pydantic validation (not member resolution): the error is
+    # reported inline and the connection stays open.
+    app = _app(_FixedExecutor([{"Orders.revenue": 1}]))
+    with TestClient(app) as client:
+        with client.websocket_connect("/cubejs-api/v1/subscribe") as ws:
+            ws.send_json({"authorization": f"Bearer {_token()}"})
+            ws.send_json(
+                {
+                    "method": "subscribe",
+                    "messageId": "1",
+                    "params": {"query": {"measures": 123}},
+                }
+            )
+            msg = ws.receive_json()
+    assert msg["type"] == "error"
+    assert "measures" in msg["error"]
+
+
+def test_ws_resubscribe_same_id_cancels_previous() -> None:
+    app = _app(_FixedExecutor([{"Orders.revenue": 1}]))
+    with TestClient(app) as client:
+        with client.websocket_connect("/cubejs-api/v1/subscribe") as ws:
+            ws.send_json({"authorization": f"Bearer {_token()}"})
+            for _ in range(2):
+                ws.send_json(
+                    {
+                        "method": "subscribe",
+                        "messageId": "1",
+                        "params": {
+                            "query": {"measures": ["Orders.revenue"]},
+                            "refreshKey": {"every": 0.05},
+                        },
+                    }
+                )
+                msg = ws.receive_json()  # re-subscribing restarts the poll task
+                assert msg["messageId"] == "1"
+    assert msg["data"] == [{"Orders.revenue": 1}]

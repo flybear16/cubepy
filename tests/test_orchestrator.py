@@ -193,3 +193,68 @@ async def test_load_with_only_time_dimension() -> None:
         _ctx(),
     )
     assert env["data"] == [{"Orders.created_at": "2026-08-01T00:00:00"}]
+
+
+async def test_load_without_any_cube_refs_uses_default_ttl() -> None:
+    # Filters reference a member, but _primary_cube_name sees no measures /
+    # dimensions / timeDimensions -> None (and TTL falls back to the default).
+    orch, exe = _orch([{"Orders.status": "x"}])
+    query = Query.parse(
+        {
+            "filters": [
+                {"member": "Orders.status", "operator": "equals", "values": ["x"]}
+            ]
+        }
+    )
+    env = await orch.load(query, _ctx())
+    assert env["data"] == [{"Orders.status": "x"}]
+
+
+async def test_refresh_key_probe_cached_between_loads() -> None:
+    # updateWindow > 0: first load executes the probe and caches its signature
+    # (setex); the second load returns the cached signature without re-probing.
+    registry.clear()
+
+    @cube(
+        "Orders",
+        "orders",
+        refresh_key={"sql": "SELECT MAX(updated_at) FROM orders", "updateWindow": 60},
+    )
+    class _O:
+        revenue = measure("amount", MeasureType.SUM)
+
+    class _ProbeExecutor:
+        def __init__(self) -> None:
+            self.probe_calls = 0
+            self.data_calls = 0
+
+        async def execute(self, stmt: TextClause) -> list[dict]:
+            if "updated_at" in str(stmt):
+                self.probe_calls += 1
+                return [{"max": "v1"}]
+            self.data_calls += 1
+            return [{"Orders.revenue": 100.0}]
+
+    exe = _ProbeExecutor()
+    orch = QueryOrchestrator(
+        RedisCache(fakeredis.FakeAsyncRedis()), exe, settings=settings
+    )
+    query = Query.parse({"measures": ["Orders.revenue"]})
+    ctx = _ctx()
+
+    await orch.load(query, ctx)   # probe executed + signature cached
+    await orch.load(query, ctx)   # probe served from cache -> query cache hit
+    assert exe.probe_calls == 1
+    assert exe.data_calls == 1
+
+
+async def test_non_integer_refresh_every_falls_back_to_default_ttl() -> None:
+    registry.clear()
+
+    @cube("Orders", "orders", refresh_key={"every": "not-an-int"})
+    class _O:
+        revenue = measure("amount", MeasureType.SUM)
+
+    orch, exe = _orch([{"Orders.revenue": 1.0}])
+    env = await orch.load(Query.parse({"measures": ["Orders.revenue"]}), _ctx())
+    assert env["data"] == [{"Orders.revenue": 1.0}]

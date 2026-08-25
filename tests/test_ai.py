@@ -44,6 +44,39 @@ def test_build_context_includes_members_and_joins(loaded):
     assert "old_m" not in ctx  # deprecated hidden
 
 
+def test_build_context_with_explicit_sources(loaded):
+    # explicit list and an explicit SchemaRegistry must produce the same catalog
+    assert build_context(registry.all()) == build_context(registry)
+
+
+def test_query_contract_returns_constant():
+    from cubepy.ai import QUERY_CONTRACT, query_contract
+
+    assert query_contract() == QUERY_CONTRACT
+
+
+def test_deprecated_dimension_hidden_and_segments_listed(tmp_path):
+    f = tmp_path / "c.yml"
+    f.write_text(
+        """
+cubes:
+  - name: t
+    sql: SELECT * FROM t
+    dimensions:
+      - {name: old_d, sql: old_d, type: string, status: deprecated}
+      - {name: status, sql: status, type: string}
+    segments:
+      - {name: active, sql: "status = 'active'"}
+""",
+        encoding="utf-8",
+    )
+    load_cube_file(f)
+    ctx = build_context()
+    assert "old_d" not in ctx  # deprecated dimension hidden
+    assert "- segment: t.active" in ctx
+    assert "t.active" in members_index()
+
+
 def test_system_prompt_has_contract_and_example(loaded):
     sp = system_prompt()
     assert '"measures"' in sp and "Example" in sp and "orders.revenue" in sp

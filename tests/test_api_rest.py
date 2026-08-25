@@ -236,3 +236,49 @@ async def test_bad_query_returns_400() -> None:
             json={"query": {"measures": ["Orders.nonexistent"]}},
         )
     assert r.status_code == 400
+
+
+async def test_meta_surfaces_member_title_and_description() -> None:
+    registry.clear()
+
+    @cube("Orders", "orders")
+    class _O:
+        revenue = measure(
+            "amount", MeasureType.SUM, title="Revenue", description="总营收"
+        )
+
+    async with _client([]) as ac:
+        r = await ac.get("/cubejs-api/v1/meta", headers=_auth())
+    cubes = {c["name"]: c for c in r.json()["cubes"]}
+    rev = next(m for m in cubes["Orders"]["measures"] if m["name"] == "revenue")
+    assert rev["title"] == "Revenue"
+    assert rev["description"] == "总营收"
+
+
+async def test_meta_skips_invisible_cube() -> None:
+    registry.clear()
+
+    @cube("Orders", "orders", shown=lambda ctx: False)
+    class _O:
+        revenue = measure("amount", MeasureType.SUM)
+
+    async with _client([]) as ac:
+        r = await ac.get("/cubejs-api/v1/meta", headers=_auth())
+    assert r.json()["cubes"] == []
+
+
+async def test_http_subscribe_returns_latest_on_timeout() -> None:
+    # Data never changes -> every poll hash-matches; the request returns the
+    # latest envelope once the deadline passes.
+    async with _client([{"Orders.revenue": 1.0}]) as ac:
+        r = await ac.post(
+            "/cubejs-api/v1/subscribe",
+            headers=_auth(),
+            json={
+                "query": {"measures": ["Orders.revenue"]},
+                "refreshKey": {"every": 0.01},
+                "timeout": 0.2,
+            },
+        )
+    assert r.status_code == 200, r.text
+    assert r.json()["data"] == [{"Orders.revenue": 1.0}]
