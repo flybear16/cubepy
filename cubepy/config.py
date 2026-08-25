@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     ask_interpret: bool = True
     # Append-only JSONL audit trail for every ask (question/query/rows/latency).
     ask_audit_log: str | None = None
+    # Glossary as a dotted "module.ATTR" path, resolved per request. Swap the
+    # domain without code changes (e.g. cubepy.samples.glossary_trade.TRADE_GLOSSARY).
+    ask_glossary: str = "cubepy.samples.glossary.SAMPLE_GLOSSARY"
 
     log_level: str = "INFO"
 

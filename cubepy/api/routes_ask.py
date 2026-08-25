@@ -18,6 +18,7 @@ Shadow paths (all covered by tests):
 
 from __future__ import annotations
 
+import importlib
 import json
 import time
 import uuid
@@ -33,7 +34,6 @@ from cubepy.api.deps import get_orchestrator
 from cubepy.config import Settings, settings
 from cubepy.llm import ChatModel, LLMError, extract_json
 from cubepy.orchestrator.orchestrator import QueryOrchestrator
-from cubepy.samples.glossary import SAMPLE_GLOSSARY
 from cubepy.schema.registry import registry
 from cubepy.security.auth import security_context
 from cubepy.security.context import SecurityContext
@@ -52,6 +52,26 @@ def get_llm(request: Request) -> ChatModel:
     if llm is None:
         raise HTTPException(status_code=503, detail="ask layer not configured (no LLM)")
     return llm
+
+
+def _glossary(conf: Settings) -> dict[str, str]:
+    """Resolve ``ask_glossary`` ("module.ATTR") per request.
+
+    A bad path fails LOUD (500 with the path) — silently dropping the glossary
+    would disarm the term-hallucination defense without anyone noticing.
+    """
+    module, _, attr = conf.ask_glossary.rpartition(".")
+    try:
+        resolved = getattr(importlib.import_module(module), attr)
+    except (ImportError, AttributeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=500, detail=f"ask_glossary 配置无效: {conf.ask_glossary}"
+        ) from exc
+    if not isinstance(resolved, dict):
+        raise HTTPException(
+            status_code=500, detail=f"ask_glossary 不是 dict: {conf.ask_glossary}"
+        )
+    return dict(resolved)
 
 
 def _visible_cubes(ctx: SecurityContext) -> list:
@@ -132,7 +152,7 @@ async def ask(
     visible = _visible_cubes(ctx)
     allowed = set(members_index(visible))
     messages: list[dict[str, str]] = [
-        {"role": "system", "content": system_prompt(visible, glossary=SAMPLE_GLOSSARY)},
+        {"role": "system", "content": system_prompt(visible, glossary=_glossary(conf))},
         {"role": "user", "content": question},
     ]
 

@@ -55,7 +55,7 @@ HTTP/WS/GraphQL 请求
 - **`orchestrator/`** — `orchestrator.py` 编排 缓存 → 预聚合路由 → 执行 → 缓存写入；含冷查询去重（in-flight Future）与 refreshKey 探针。`executor.py` 提供 async/sync 两种执行器。`preagg.py` 是 fail-closed 聚合导航 matcher（命中返回 `RollupRoute`），配合 `sqlgen/rollup.py` 的 `RollupBuilder` 改写、`rollup_builder.py` 的幂等 CTAS、`scheduler.py` 的定时刷新。
 - **`api/`** — REST（`routes_rest.py`：`/cubejs-api/v1/{load,sql,meta,subscribe}`）、WS subscribe（`routes_ws.py`）、GraphQL（`graphql.py`，Strawberry）。`app.py` 是应用工厂，测试可直接注入 orchestrator 绕过真实 engine/Redis。
 - **`cache/`** — `redis.asyncio` 封装（`redis_cache.py`）。**`client/`** — 异步客户端 SDK。
-- **`llm.py` + `api/routes_ask.py`** — AI 问数层（M2，默认关）。`POST /cubepy/v1/ask`：`llm.py` 是 OpenAI 兼容薄客户端（DeepSeek/qwen/OpenAI/vLLM 纯配置）+ `FakeLLM` 测试替身；`routes_ask.py` 串 NL→LLM→白名单校验→`orchestrator.load`（同 ctx 注 RLS）→洞察。**安全铁律：prompt 目录来自 `cube_visible(ctx)` 过滤，与执行共用同一 SecurityContext**；LLM 输出永远当不可信输入（`members_index` 白名单 + `Query.parse` 双校验，fail-closed）。术语表 MVP 硬编码于 `samples/glossary.py`。
+- **`llm.py` + `api/routes_ask.py`** — AI 问数层（M2，默认关）。`POST /cubepy/v1/ask`：`llm.py` 是 OpenAI 兼容薄客户端（DeepSeek/qwen/OpenAI/vLLM 纯配置）+ `FakeLLM` 测试替身；`routes_ask.py` 串 NL→LLM→白名单校验→`orchestrator.load`（同 ctx 注 RLS）→洞察。**安全铁律：prompt 目录来自 `cube_visible(ctx)` 过滤，与执行共用同一 SecurityContext**；LLM 输出永远当不可信输入（`members_index` 白名单 + `Query.parse` 双校验，fail-closed）。术语表默认 `samples/glossary.py`，可经 `CUBEPY_ASK_GLOSSARY`（dotted path）换域（如 `samples/glossary_trade.py` 电商域 + `samples/trade_schema.py` + `samples/seed_trade.sql`，M3 mock pilot 10/10）。
 
 ## 关键约定（非显而易见，跨多文件）
 

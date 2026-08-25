@@ -327,7 +327,14 @@ class SQLBuilder:
             if not any(s.endswith(f'AS "{ref}"') for s in inner_select):
                 inner_select.append(self._measure_select_item(ref))
 
+        # A member listed in BOTH dimensions and timeDimensions must render
+        # once — the timeDimensions loop below owns it (granularity + dateRange).
+        # Without this guard the SQL carries two identical aliases, a polluted
+        # GROUP BY and an ambiguous ORDER BY (caught by the M3 pilot).
+        td_paths = {td.dimension for td in self.query.timeDimensions}
         for path in self.query.dimensions:
+            if path in td_paths:
+                continue
             cube, _kind, member = self._resolve_member(path)
             self._ensure_visible("dimension", member)
             inner_select.append(f'{member.sql} AS "{path}"')

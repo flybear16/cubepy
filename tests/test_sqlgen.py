@@ -516,3 +516,25 @@ def test_filter_parse_direct() -> None:
 def test_order_dict_normalisation() -> None:
     sql = _sql({"measures": ["Orders.revenue"], "order": {"Orders.revenue": "desc"}})
     assert 'ORDER BY "Orders.revenue" DESC' in sql
+
+
+def test_time_dim_in_both_dimensions_and_time_dimensions_renders_once() -> None:
+    """M3 pilot caught: a member listed in BOTH dimensions and timeDimensions
+    rendered twice -> duplicate aliases, polluted GROUP BY, ambiguous ORDER BY.
+    The timeDimensions rendering (granularity + dateRange) must win alone."""
+    sql = _sql(
+        {
+            "measures": ["Orders.count"],
+            "dimensions": ["Orders.created_at"],
+            "timeDimensions": [
+                {"dimension": "Orders.created_at", "granularity": "day", "dateRange": "last 30 days"}
+            ],
+            "order": [["Orders.created_at", "asc"]],
+        }
+    )
+    assert sql.count('AS "Orders.created_at"') == 1  # exactly one alias
+    assert "date_trunc('day', created_at) AS \"Orders.created_at\"" in sql
+    # the plain column must NOT sneak into SELECT or GROUP BY alongside the trunc
+    assert 'created_at AS "Orders.created_at"' not in sql
+    assert "GROUP BY created_at, date_trunc" not in sql
+    assert sql.count("date_trunc") == 2  # once in SELECT, once in GROUP BY

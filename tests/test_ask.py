@@ -216,6 +216,32 @@ async def test_ask_writes_audit_jsonl(tmp_path: Path, monkeypatch: pytest.Monkey
     assert entry["audit_id"] == r.json()["auditId"]
 
 
+# --- glossary config (M3 lift) ------------------------------------------------
+
+
+async def test_ask_glossary_swappable_via_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        settings,
+        "ask_glossary",
+        "cubepy.samples.glossary_trade.TRADE_GLOSSARY",
+    )
+    llm = FakeLLM(responses=[_GOOD_QUERY, "ok"])
+    async with _client(_GOOD_ROWS, llm) as ac:
+        r = await _ask(ac, "收入")
+    assert r.status_code == 200
+    system = llm.calls[0][0]["content"]
+    assert "DwdOrders.gmv" in system  # trade glossary won over the default
+
+
+async def test_ask_bad_glossary_config_fails_loud(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "ask_glossary", "cubepy.nope.MISSING")
+    llm = FakeLLM(responses=[_GOOD_QUERY, "ok"])
+    async with _client(_GOOD_ROWS, llm) as ac:
+        r = await _ask(ac, "收入")
+    assert r.status_code == 500
+    assert "ask_glossary 配置无效" in r.json()["detail"]
+
+
 # --- RLS end-to-end on the Hologres-emulated PG --------------------------------
 
 
