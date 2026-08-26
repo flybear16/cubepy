@@ -2,7 +2,7 @@
 
 import pytest
 
-from cubepy.ai import build_context, members_index, system_prompt
+from cubepy.ai import build_context, members_index, query_contract, system_prompt
 from cubepy.schema.loader import load_cube_file
 from cubepy.schema.registry import registry
 
@@ -86,3 +86,8 @@ def test_members_index(loaded):
     idx = members_index()
     assert "orders.revenue" in idx and "orders.status" in idx
     assert "orders.old_m" not in idx
+
+
+def test_contract_forbids_extra_dimensions() -> None:
+    """即兴验证抓到：LLM 自加时间维度致 data 形状错（洞察层险些兜不住）。"""
+    assert "Return ONLY the dimensions the question asks for" in query_contract()

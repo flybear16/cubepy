@@ -43,6 +43,9 @@ afterDate|beforeDate|set|notSet|inDateRange|notInDateRange",
 }
 Rules:
 - Use ONLY member paths listed in the catalog below; never invent names.
+- Return ONLY the dimensions the question asks for. Do NOT add a time dimension
+  unless the question asks for a trend/period breakdown — "最近7天各渠道订单数"
+  means FILTER by time, group by channel only.
 - Joins are automatic: any cube referenced by measures/dimensions is joined
   along declared relationships — no join config needed.
 - Relative dateRanges ("last 30 days") are supported; timezone default UTC.

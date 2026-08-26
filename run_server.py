@@ -64,7 +64,10 @@ def _demo_llm() -> FakeLLM | OpenAICompatibleLLM:
 
 
 def main() -> None:
-    register_samples()
+    import sys
+
+    trade_mode = len(sys.argv) > 1 and sys.argv[1] == "trade"
+    n_orders = 0
 
     container = PostgresContainer("postgres:16-alpine")
     container.start()
@@ -73,7 +76,18 @@ def main() -> None:
     seed_engine = create_engine(sync_url)
     try:
         with seed_engine.begin() as conn:
-            conn.exec_driver_sql(SEED.read_text())
+            if trade_mode:
+                # M3 mock 环境：电商交易域（60k 确定性数据，PG 模拟 Hologres 形状）。
+                # 术语表切换到 TRADE_GLOSSARY，/cubepy/v1/ask 即可自由问数。
+                from cubepy.samples.trade_data import generate_trade_data
+                from cubepy.samples.trade_schema import register_trade_schema
+
+                n_orders = generate_trade_data(conn)
+                register_trade_schema()
+                settings.ask_glossary = "cubepy.samples.glossary_trade.TRADE_GLOSSARY"
+            else:
+                register_samples()
+                conn.exec_driver_sql(SEED.read_text())
     finally:
         seed_engine.dispose()
 
@@ -86,7 +100,9 @@ def main() -> None:
     )
     app = create_app(orchestrator=orch, llm=_demo_llm())
 
-    print(f"\n[cubepy] Postgres : {async_url}")
+    mode = f"trade mock ({n_orders} orders, M3)" if trade_mode else "orders demo"
+    print(f"\n[cubepy] Mode     : {mode}")
+    print(f"[cubepy] Postgres : {async_url}")
     print(f"[cubepy] Redis    : {settings.redis_url}")
     print("[cubepy] Ask      : POST /cubepy/v1/ask  (FakeLLM demo or CUBEPY_LLM_*)")
     print(f"[cubepy] Listening: http://127.0.0.1:{PORT}  (docs at /docs)\n")
