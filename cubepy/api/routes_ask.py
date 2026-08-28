@@ -20,9 +20,11 @@ from __future__ import annotations
 
 import importlib
 import json
+import re
 import time
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +43,9 @@ from cubepy.security.permissions import PermissionBuilder
 from cubepy.sqlgen.query import Query
 
 router = APIRouter(dependencies=[Depends(security_context)])
+
+# Optional sign, digits, one dot — conservative numeric-string detector.
+_NUMERIC_STR = re.compile(r"^-?\d+(\.\d+)?$")
 
 
 class AskRequest(BaseModel):
@@ -68,9 +73,7 @@ def _glossary(conf: Settings) -> dict[str, str]:
             status_code=500, detail=f"ask_glossary 配置无效: {conf.ask_glossary}"
         ) from exc
     if not isinstance(resolved, dict):
-        raise HTTPException(
-            status_code=500, detail=f"ask_glossary 不是 dict: {conf.ask_glossary}"
-        )
+        raise HTTPException(status_code=500, detail=f"ask_glossary 不是 dict: {conf.ask_glossary}")
     return dict(resolved)
 
 
@@ -111,11 +114,66 @@ def _audit(conf: Settings, entry: dict[str, Any]) -> str:
         try:
             path = Path(conf.ask_audit_log)
             path.parent.mkdir(parents=True, exist_ok=True)
+            # default=str: filter values may carry Decimal after LLM-output
+            # normalisation; the audit must never break the request.
             with path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                fh.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
         except OSError:  # noqa: BLE001 — audit must never break the request
             pass
     return audit_id
+
+
+def _normalize_filter_numbers(payload: dict[str, Any]) -> dict[str, Any]:
+    """Coerce numeric-looking filter values on numeric members to Decimal.
+
+    LLMs frequently emit numeric thresholds as JSON strings ("700000"), which
+    bind as VARCHAR and blow up on ``numeric > varchar`` in PG. Dimension of
+    the fix: LLM-output sanitisation at the ask boundary — direct REST callers
+    keep full responsibility for their own value types.
+    """
+
+    def is_number_dim(member: str) -> bool:
+        cube_name, _, member_name = member.partition(".")
+        try:
+            cube = registry.get(cube_name)
+        except KeyError:
+            return False  # unknown member: the whitelist rejects it right after
+        for d in cube.dimensions:
+            if d.name == member_name:
+                return d.type.value == "number"
+        return any(m.name == member_name for m in cube.measures)
+
+    def walk(filters: Any) -> Any:
+        if not isinstance(filters, list):
+            return filters
+        out = []
+        for f in filters:
+            if not isinstance(f, dict):
+                out.append(f)
+                continue
+            for key in ("or", "and"):
+                if key in f:
+                    out.append({**f, key: walk(f[key])})
+                    break
+            else:
+                values = f.get("values")
+                member = f.get("member")
+                if member and is_number_dim(member) and isinstance(values, list):
+                    coerced = [
+                        Decimal(str(v))
+                        if isinstance(v, str) and _NUMERIC_STR.match(v.strip())
+                        else v
+                        for v in values
+                    ]
+                    out.append({**f, "values": coerced})
+                else:
+                    out.append(f)
+        return out
+
+    payload = dict(payload)
+    if isinstance(payload.get("filters"), list):  # never inject filters=None
+        payload["filters"] = walk(payload["filters"])
+    return payload
 
 
 async def _interpret(llm: ChatModel, rows: list[dict[str, Any]], question: str) -> str | None:
@@ -184,6 +242,7 @@ async def ask(
         invalid = [m for m in _collect_members(payload) if m not in allowed]
         if not invalid:
             try:
+                payload = _normalize_filter_numbers(payload)
                 query = Query.parse(payload)
                 break
             except (ValueError, KeyError) as exc:  # noqa: PERF203 — last try below

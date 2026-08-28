@@ -91,3 +91,9 @@ def test_members_index(loaded):
 def test_contract_forbids_extra_dimensions() -> None:
     """即兴验证抓到：LLM 自加时间维度致 data 形状错（洞察层险些兜不住）。"""
     assert "Return ONLY the dimensions the question asks for" in query_contract()
+
+
+def test_contract_documents_measure_filters() -> None:
+    """docs/06 §2 measureFilter: the LLM contract teaches measure-path filters
+    (HAVING) so "GMV超过100万的渠道" style questions are answerable."""
+    assert "MEASURE" in query_contract() and "HAVING" in query_contract()

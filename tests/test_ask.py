@@ -268,3 +268,38 @@ async def test_ask_rls_isolates_tenant_on_real_pg(pg_client: AsyncClient) -> Non
     by_status = {row["Orders.status"]: row["Orders.revenue"] for row in r.json()["data"]}
     # tenant 42 only: shipped 40 + pending 5; tenant 99's 100 must NOT appear.
     assert by_status == {"shipped": 40.0, "pending": 5.0}
+
+
+# --- LLM numeric-string normalisation (live HAVING check caught it) -----------
+
+
+async def test_ask_coerces_numeric_string_thresholds_on_measures() -> None:
+    """LLM emits "700000" as a JSON string -> binds as VARCHAR -> PG
+    numeric > varchar explodes. The ask layer must coerce to Decimal."""
+    llm = FakeLLM(
+        responses=[
+            '{"measures": ["Orders.revenue"], "dimensions": ["Orders.status"],'
+            ' "filters": [{"member": "Orders.revenue", "operator": "gt", "values": ["20"]}]}',
+            "ok",
+        ]
+    )
+    async with _client(_GOOD_ROWS, llm) as ac:
+        r = await _ask(ac, "收入超过20的状态")
+    assert r.status_code == 200, r.text
+    # Decimal normalisation happened (Pydantic v2 echoes Decimal back as str
+    # in JSON — the executed query binds a proper numeric; proven live).
+    assert r.json()["query"]["filters"][0]["values"] == ["20"]
+
+
+async def test_ask_leaves_string_dimension_values_alone() -> None:
+    llm = FakeLLM(
+        responses=[
+            '{"measures": ["Orders.revenue"],'
+            ' "filters": [{"member": "Orders.status", "operator": "equals", "values": ["20"]}]}',
+            "ok",
+        ]
+    )
+    async with _client(_GOOD_ROWS, llm) as ac:
+        r = await _ask(ac, "状态20")
+    assert r.status_code == 200
+    assert r.json()["query"]["filters"][0]["values"] == ["20"]  # string dim: untouched

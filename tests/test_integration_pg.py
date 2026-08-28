@@ -29,7 +29,9 @@ pytestmark = pytest.mark.integration
 
 
 def _token(tenant_id: int, role: str = "admin") -> str:
-    return create_token({"sub": "u1", "role": role, "tid": str(tenant_id)}, secret=settings.jwt_secret)
+    return create_token(
+        {"sub": "u1", "role": role, "tid": str(tenant_id)}, secret=settings.jwt_secret
+    )
 
 
 def _auth(tenant_id: int = 42) -> dict[str, str]:
@@ -59,7 +61,9 @@ async def _rows_by(ac: AsyncClient, key: str, body: dict, tenant: int = 42) -> d
     return {row[key]: row for row in r.json()["data"]}
 
 
-async def test_load_status_aggregate_with_rls(client: tuple[AsyncClient, QueryOrchestrator]) -> None:
+async def test_load_status_aggregate_with_rls(
+    client: tuple[AsyncClient, QueryOrchestrator],
+) -> None:
     ac, _ = client
     by_status = await _rows_by(
         ac,
@@ -81,8 +85,11 @@ async def test_load_time_dimension_range(client: tuple[AsyncClient, QueryOrchest
         {
             "measures": ["Orders.revenue"],
             "timeDimensions": [
-                {"dimension": "Orders.created_at", "granularity": "day",
-                 "dateRange": ["2026-08-01", "2026-08-02"]}
+                {
+                    "dimension": "Orders.created_at",
+                    "granularity": "day",
+                    "dateRange": ["2026-08-01", "2026-08-02"],
+                }
             ],
         },
     )
@@ -114,7 +121,9 @@ async def test_load_calculated_measure(client: tuple[AsyncClient, QueryOrchestra
     assert by_status["pending"]["Orders.avg_order_value"] == 5.0  # 5 / 1
 
 
-async def test_load_window_measure_cumulative(client: tuple[AsyncClient, QueryOrchestrator]) -> None:
+async def test_load_window_measure_cumulative(
+    client: tuple[AsyncClient, QueryOrchestrator],
+) -> None:
     ac, _ = client
     by_day = await _rows_by(
         ac,
@@ -164,7 +173,7 @@ async def test_meta_and_sql(client: tuple[AsyncClient, QueryOrchestrator]) -> No
 
 async def test_graphql_against_postgres(client: tuple[AsyncClient, QueryOrchestrator]) -> None:
     ac, _ = client
-    gql = "{ load(query: {measures: [\"Orders.revenue\"], dimensions: [\"Orders.status\"]}) { data } }"
+    gql = '{ load(query: {measures: ["Orders.revenue"], dimensions: ["Orders.status"]}) { data } }'
     r = await ac.post(
         "/cubejs-api/graphql",
         headers={**_auth(), "Content-Type": "application/json"},
@@ -215,7 +224,9 @@ async def test_graphql_dynamic_per_cube(client: tuple[AsyncClient, QueryOrchestr
     assert by["pending"] == 5.0
 
 
-async def test_orchestrator_detects_db_change(client: tuple[AsyncClient, QueryOrchestrator], pg_dsn: str) -> None:
+async def test_orchestrator_detects_db_change(
+    client: tuple[AsyncClient, QueryOrchestrator], pg_dsn: str
+) -> None:
     from cubepy.security.context import SecurityContext
     from cubepy.sqlgen.query import Query
 
@@ -242,3 +253,25 @@ async def test_orchestrator_detects_db_change(client: tuple[AsyncClient, QueryOr
     after = await orch.load(Query.parse(query_body), ctx, use_cache=False)
     after_total = sum(r["Orders.revenue"] for r in after["data"])
     assert after_total == before_total + 7.0
+
+
+async def test_load_measure_filter_having(
+    client: tuple[AsyncClient, QueryOrchestrator], pg_reseed: str
+) -> None:
+    """docs/06 §2 measureFilter: a filter on a measure is an aggregate
+    predicate (HAVING) — pending (revenue 5) drops, shipped (40) stays.
+
+    ``pg_reseed``: an earlier test inserts an order without restoring it."""
+    ac, _ = client
+    by_status = await _rows_by(
+        ac,
+        "Orders.status",
+        {
+            "measures": ["Orders.revenue", "Orders.count"],
+            "dimensions": ["Orders.status"],
+            "filters": [{"member": "Orders.revenue", "operator": "gt", "values": [20]}],
+        },
+    )
+    assert set(by_status) == {"shipped"}
+    assert by_status["shipped"]["Orders.revenue"] == 40.0
+    assert by_status["shipped"]["Orders.count"] == 2

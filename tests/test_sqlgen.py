@@ -39,7 +39,8 @@ def _orders_users() -> Iterator[None]:
         amount_max = measure("amount", MeasureType.MAX)
         approx_users = measure("user_id", MeasureType.COUNT_DISTINCT_APPROX)
         filtered_revenue = measure(
-            "amount", MeasureType.SUM,
+            "amount",
+            MeasureType.SUM,
             filters=({"member": "Orders.status", "operator": "equals", "values": ["shipped"]},),
         )
         status = dimension("status", "string")
@@ -67,6 +68,7 @@ def _sql(query: dict, ctx: SecurityContext | None = None) -> str:
 
 
 # --- shape assertions ---------------------------------------------------------
+
 
 def test_measure_dimension_groupby_and_rls() -> None:
     sql = _sql({"measures": ["Orders.revenue", "Orders.count"], "dimensions": ["Orders.status"]})
@@ -124,7 +126,10 @@ def test_filters_operators() -> None:
     )
     assert "orders.tenant_id = 42" in sql
     assert "status = 'shipped'" in sql
-    assert "amount >= 100" in sql
+    # measure filter renders as HAVING (aggregate predicate), never as a
+    # row-level WHERE on the raw column — the old WHERE rendering was a bug.
+    assert "HAVING sum(amount) >= 100" in sql
+    assert "amount >= 100" not in sql.split("HAVING")[0]
     assert "status IN ('a', 'b')" in sql
     assert "status LIKE '%hip%'" in sql
     assert "status IS NOT NULL" in sql
@@ -160,6 +165,7 @@ def test_hidden_member_fails_closed() -> None:
 
 # --- execution smoke (SQLite) -------------------------------------------------
 
+
 def test_executes_and_aggregates_on_sqlite() -> None:
     engine = create_engine("sqlite:///:memory:")
     with engine.begin() as conn:
@@ -178,7 +184,9 @@ def test_executes_and_aggregates_on_sqlite() -> None:
             {
                 "measures": ["Orders.revenue", "Orders.count"],
                 "dimensions": ["Orders.status"],
-                "filters": [{"member": "Orders.status", "operator": "equals", "values": ["shipped"]}],
+                "filters": [
+                    {"member": "Orders.status", "operator": "equals", "values": ["shipped"]}
+                ],
                 "order": [["Orders.revenue", "desc"]],
             }
         ),
@@ -263,9 +271,7 @@ def test_window_measure_wraps_in_subquery() -> None:
     sql = _sql(
         {
             "measures": ["Orders.cumulative"],
-            "timeDimensions": [
-                {"dimension": "Orders.created_at", "granularity": "day"}
-            ],
+            "timeDimensions": [{"dimension": "Orders.created_at", "granularity": "day"}],
         }
     )
     assert 'sum(sub."Orders.revenue") OVER (ORDER BY sub."Orders.created_at")' in sql
@@ -292,7 +298,12 @@ def test_aggregate_measure_types_execute_on_sqlite() -> None:
     stmt = SQLBuilder(
         Query.parse(
             {
-                "measures": ["Orders.amount_avg", "Orders.amount_min", "Orders.amount_max", "Orders.uniq"],
+                "measures": [
+                    "Orders.amount_avg",
+                    "Orders.amount_min",
+                    "Orders.amount_max",
+                    "Orders.uniq",
+                ],
             }
         ),
         _ctx(),
@@ -527,7 +538,11 @@ def test_time_dim_in_both_dimensions_and_time_dimensions_renders_once() -> None:
             "measures": ["Orders.count"],
             "dimensions": ["Orders.created_at"],
             "timeDimensions": [
-                {"dimension": "Orders.created_at", "granularity": "day", "dateRange": "last 30 days"}
+                {
+                    "dimension": "Orders.created_at",
+                    "granularity": "day",
+                    "dateRange": "last 30 days",
+                }
             ],
             "order": [["Orders.created_at", "asc"]],
         }
@@ -538,3 +553,133 @@ def test_time_dim_in_both_dimensions_and_time_dimensions_renders_once() -> None:
     assert 'created_at AS "Orders.created_at"' not in sql
     assert "GROUP BY created_at, date_trunc" not in sql
     assert sql.count("date_trunc") == 2  # once in SELECT, once in GROUP BY
+
+
+# --- measureFilter (HAVING) — docs/06 §2 last contract item ------------------
+
+
+def test_measure_filter_renders_having_not_where() -> None:
+    sql = _sql(
+        {
+            "measures": ["Orders.revenue"],
+            "dimensions": ["Orders.status"],
+            "filters": [{"member": "Orders.revenue", "operator": "gt", "values": [100]}],
+        }
+    )
+    assert "HAVING sum(amount) > " in sql  # aggregate expr repeated, not the alias
+    assert '"Orders.revenue" > ' not in sql.split("HAVING")[1]
+    assert "WHERE" in sql and "orders.tenant_id = 42" in sql  # RLS still WHERE
+
+
+def test_measure_filter_value_is_bound_param() -> None:
+    from sqlalchemy import create_engine
+
+    from cubepy.security.context import SecurityContext
+
+    ctx = SecurityContext(role="admin", tenant_id="42")
+    stmt = SQLBuilder(
+        Query.parse(
+            {
+                "measures": ["Orders.revenue"],
+                "dimensions": ["Orders.status"],
+                "filters": [
+                    {"member": "Orders.revenue", "operator": "gte", "values": ["7; DROP TABLE x"]}
+                ],
+            }
+        ),
+        ctx,
+        now=NOW,
+    ).build()
+    compiled = stmt.compile(dialect=create_engine("sqlite://").dialect)
+    assert "DROP TABLE" not in str(compiled)
+    assert list(compiled.params.values()) == ["7; DROP TABLE x"]
+
+
+def test_measure_and_dimension_filters_split_correctly() -> None:
+    sql = _sql(
+        {
+            "measures": ["Orders.revenue"],
+            "dimensions": ["Orders.status"],
+            "filters": [
+                {"member": "Orders.status", "operator": "equals", "values": ["shipped", "pending"]},
+                {"member": "Orders.revenue", "operator": "lte", "values": [50]},
+            ],
+        }
+    )
+    # equals with multiple values ORs; dimension predicate stays in WHERE
+    assert "status = " in sql.split("HAVING")[0]
+    assert "HAVING sum(amount) <= " in sql
+
+
+def test_calculated_measure_filter_uses_formula_in_having() -> None:
+    sql = _sql(
+        {
+            "measures": ["Orders.avg"],
+            "dimensions": ["Orders.status"],
+            "filters": [{"member": "Orders.avg", "operator": "gt", "values": [10]}],
+        }
+    )
+    # the calculated formula is repeated inside HAVING (no alias reference)
+    assert "HAVING (sum(amount)) / NULLIF((count(*)), 0) > 10" in sql
+
+
+def test_measure_composite_filter_goes_to_having() -> None:
+    sql = _sql(
+        {
+            "measures": ["Orders.revenue"],
+            "dimensions": ["Orders.status"],
+            "filters": [
+                {
+                    "or": [
+                        {"member": "Orders.revenue", "operator": "gt", "values": [100]},
+                        {"member": "Orders.count", "operator": "gt", "values": [5]},
+                    ]
+                }
+            ],
+        }
+    )
+    assert "HAVING (sum(amount) > " in sql and "OR count(*) > " in sql
+
+
+def test_mixed_composite_filter_fails_closed() -> None:
+    with pytest.raises(ValueError, match="composite"):
+        _sql(
+            {
+                "measures": ["Orders.revenue"],
+                "dimensions": ["Orders.status"],
+                "filters": [
+                    {
+                        "and": [
+                            {
+                                "member": "Orders.status",
+                                "operator": "equals",
+                                "values": ["shipped"],
+                            },
+                            {"member": "Orders.revenue", "operator": "gt", "values": [100]},
+                        ]
+                    }
+                ],
+            }
+        )
+
+
+def test_string_operator_on_measure_fails_closed() -> None:
+    with pytest.raises(ValueError, match="not supported on measure"):
+        _sql(
+            {
+                "measures": ["Orders.revenue"],
+                "dimensions": ["Orders.status"],
+                "filters": [{"member": "Orders.revenue", "operator": "contains", "values": ["x"]}],
+            }
+        )
+
+
+def test_window_measure_filter_fails_closed() -> None:
+    with pytest.raises(ValueError, match="window measure"):
+        _sql(
+            {
+                "measures": ["Orders.cumulative"],
+                "dimensions": ["Orders.status"],
+                "filters": [{"member": "Orders.cumulative", "operator": "gt", "values": [100]}],
+            }
+        )

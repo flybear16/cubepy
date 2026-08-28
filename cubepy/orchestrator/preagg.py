@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 
 from cubepy.schema.meta import MeasureType
 from cubepy.schema.registry import registry
+from cubepy.sqlgen.builder import filters_contain_measure
 from cubepy.sqlgen.query import Query
 
 if TYPE_CHECKING:
@@ -82,6 +83,13 @@ class PreAggRouter:
         # so fail closed.
         if query.segments:
             logger.debug("pre-agg miss: query uses segments")
+            return None
+
+        # Measure filters are aggregate predicates (HAVING); the rollup rewrite
+        # compiles filters as row-level WHERE on the rollup table, which would
+        # silently change semantics -> fail closed to the base cube.
+        if filters_contain_measure(query.filters):
+            logger.debug("pre-agg miss: query uses measure filters (HAVING)")
             return None
 
         cube_names = self._referenced_cubes(query)

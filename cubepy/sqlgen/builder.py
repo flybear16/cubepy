@@ -141,8 +141,7 @@ class SQLBuilder:
                 ref = cube.measure(ref_name)
             except KeyError:
                 raise ValueError(
-                    f"calculated measure {measure.name!r} references unknown "
-                    f"measure {{{ref_name}}}"
+                    f"calculated measure {measure.name!r} references unknown measure {{{ref_name}}}"
                 ) from None
             if ref.type == MeasureType.CALCULATED:
                 raise ValueError(
@@ -174,21 +173,37 @@ class SQLBuilder:
                 raise ValueError(
                     f"cube {cube.name!r} is referenced but not joined to {primary.name!r}"
                 )
-            joins.append(
-                f"LEFT JOIN {self._base_table(cube)} AS {alias} ON ({join.sql})"
-            )
+            joins.append(f"LEFT JOIN {self._base_table(cube)} AS {alias} ON ({join.sql})")
         return from_sql, joins
 
-    def _compile_filter(self, f: Filter) -> str:
+    # HAVING only supports aggregate comparisons; string/date operators have
+    # no meaning on an aggregated value (docs/06 §2 measureFilter).
+    _MEASURE_FILTER_OPS = {"equals", "notEquals", "gt", "gte", "lt", "lte"}
+
+    def _compile_filter(self, f: Filter, *, having: bool = False) -> str:
         if f.or_:
-            return "(" + " OR ".join(self._compile_filter(x) for x in f.or_) + ")"
+            return "(" + " OR ".join(self._compile_filter(x, having=having) for x in f.or_) + ")"
         if f.and_:
-            return "(" + " AND ".join(self._compile_filter(x) for x in f.and_) + ")"
+            return "(" + " AND ".join(self._compile_filter(x, having=having) for x in f.and_) + ")"
         if not f.member or not f.operator:
             raise ValueError("filter requires member and operator")
         cube, kind, member = self._resolve_member(f.member)
         self._ensure_visible(kind, member)
-        col = member.sql
+        if kind == "measure":
+            if not having:
+                raise ValueError(
+                    "measure filters inside a composite filter are not supported "
+                    "(cannot mix WHERE and HAVING); move the measure filter to the top level"
+                )
+            if member.type in self._WINDOW_TYPES:
+                raise ValueError(f"window measure {f.member!r} cannot be used in filters")
+            if f.operator not in self._MEASURE_FILTER_OPS:
+                raise ValueError(
+                    f"operator {f.operator!r} is not supported on measure {f.member!r}"
+                )
+            col = self._measure_expr(f.member)  # HAVING repeats the aggregate expr
+        else:
+            col = member.sql
         op = OPERATORS.get(f.operator)
         if op is None:
             raise ValueError(f"unknown filter operator {f.operator!r}")
@@ -229,8 +244,7 @@ class SQLBuilder:
                     ref = cube.measure(ref_name)
                 except KeyError:
                     raise ValueError(
-                        f"window measure {member.name!r} references unknown "
-                        f"measure {ref_name!r}"
+                        f"window measure {member.name!r} references unknown measure {ref_name!r}"
                     ) from None
                 if ref.type in self._WINDOW_TYPES or ref.type == MeasureType.CALCULATED:
                     raise ValueError(
@@ -259,13 +273,19 @@ class SQLBuilder:
         return ", ".join(cols)
 
     def _measure_select_item(self, path: str) -> str:
+        return f'{self._measure_expr(path)} AS "{path}"'
+
+    def _measure_expr(self, path: str) -> str:
+        """Aggregate SQL for a measure, without the output alias.
+
+        Also used by HAVING, which (unlike ORDER BY) may not reference
+        select-list aliases in PG — the expression must be repeated.
+        """
         cube, _kind, member = self._resolve_member(path)
         self._ensure_visible("measure", member)
         if member.type == MeasureType.CALCULATED:
-            expr = self._calculated_sql(cube, member)
-        else:
-            expr = self._measure_sql(member)
-        return f'{expr} AS "{path}"'
+            return self._calculated_sql(cube, member)
+        return self._measure_sql(member)
 
     def _collect_where(self, time_ranges: list[str]) -> list[str]:
         where: list[str] = []
@@ -277,10 +297,37 @@ class SQLBuilder:
         for seg_path in self.query.segments:
             _cube, _kind, member = self._resolve_member(seg_path)
             where.append(member.sql)
-        for f in self.query.filters:
-            where.append(self._compile_filter(f))
         where.extend(time_ranges)
         return where
+
+    def _is_measure_filter(self, f: Filter) -> bool:
+        """A (possibly composite) filter whose leaves ALL target measures.
+
+        Pure-measure composites render into HAVING; mixed composites raise
+        (WHERE/HAVING cannot be joined inside one boolean tree).
+        """
+        if f.or_ or f.and_:
+            children = list(f.or_ or f.and_)
+            return bool(children) and all(self._is_measure_filter(c) for c in children)
+        if not f.member:
+            return False
+        _cube, kind, _member = self._resolve_member(f.member)
+        return kind == "measure"
+
+    def _split_filters(self) -> tuple[list[str], list[str]]:
+        """Route query filters into (where_fragments, having_fragments).
+
+        Dimension-member filters are row-level predicates (WHERE); measure-member
+        filters are aggregate predicates (HAVING) — docs/06 §2 ``measureFilter``.
+        """
+        where_frags: list[str] = []
+        having_frags: list[str] = []
+        for f in self.query.filters:
+            if self._is_measure_filter(f):
+                having_frags.append(self._compile_filter(f, having=True))
+            else:
+                where_frags.append(self._compile_filter(f))
+        return where_frags, having_frags
 
     def _assemble_body(
         self,
@@ -289,6 +336,7 @@ class SQLBuilder:
         joins: list[str],
         where: list[str],
         group_items: list[str],
+        having: list[str] | None = None,
     ) -> str:
         parts = ["SELECT " + ",\n       ".join(select_items), f"FROM {from_sql}"]
         parts.extend(joins)
@@ -296,6 +344,8 @@ class SQLBuilder:
             parts.append("WHERE " + "\n  AND ".join(where))
         if group_items:
             parts.append("GROUP BY " + ", ".join(group_items))
+        if having:
+            parts.append("HAVING " + "\n  AND ".join(having))
         return "\n".join(parts)
 
     def _tail(self) -> str:
@@ -348,22 +398,26 @@ class SQLBuilder:
             inner_select.append(f'{expr} AS "{td.dimension}"')
             group_items.append(expr)
             if td.dateRange is not None:
-                start, end = resolve_date_range(
-                    td.dateRange, now=self.now, tz=self.query.timezone
-                )
+                start, end = resolve_date_range(td.dateRange, now=self.now, tz=self.query.timezone)
                 time_ranges.append(
-                    f"{col} >= {self._params.bind(start)}"
-                    f" AND {col} <= {self._params.bind(end)}"
+                    f"{col} >= {self._params.bind(start)} AND {col} <= {self._params.bind(end)}"
                 )
 
         where = self._collect_where(time_ranges)
+        where_filters, having = self._split_filters()
+        where += where_filters
         from_sql, joins = self._from_clause()
 
         if not window_specs:
-            return self._assemble_body(inner_select, from_sql, joins, where, group_items) + "\n" + self._tail()
+            return (
+                self._assemble_body(inner_select, from_sql, joins, where, group_items, having)
+                + "\n"
+                + self._tail()
+            )
 
         # Window path: grouped inner query wrapped by an outer query applying window fns.
-        inner_sql = self._assemble_body(inner_select, from_sql, joins, where, group_items)
+        # HAVING belongs to the grouped inner query (logical evaluation order).
+        inner_sql = self._assemble_body(inner_select, from_sql, joins, where, group_items, having)
         order_cols = self._window_order_cols()
 
         outer_select: list[str] = []
@@ -380,3 +434,28 @@ class SQLBuilder:
 
         sql = "SELECT " + ",\n       ".join(outer_select) + f"\nFROM (\n{inner_sql}\n) sub\n"
         return sql + self._tail()
+
+
+def filters_contain_measure(filters: list) -> bool:
+    """True if any leaf filter targets a measure member (i.e. becomes HAVING).
+
+    Used by the pre-agg router to fail closed: the rollup rewrite compiles
+    filters as row-level WHERE on the rollup table, which would silently
+    change semantics for aggregate (measure) filters.
+    """
+    for f in filters:
+        if getattr(f, "or_", None) or getattr(f, "and_", None):
+            if filters_contain_measure(list(f.or_ or f.and_)):
+                return True
+            continue
+        member = getattr(f, "member", None)
+        if not member or "." not in member:
+            continue
+        cube_name, member_name = member.split(".", 1)
+        try:
+            cube = registry.get(cube_name)
+        except KeyError:
+            continue  # unknown member: Query.parse / builder will raise properly
+        if any(m.name == member_name for m in cube.measures):
+            return True
+    return False

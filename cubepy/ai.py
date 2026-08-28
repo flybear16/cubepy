@@ -46,6 +46,10 @@ Rules:
 - Return ONLY the dimensions the question asks for. Do NOT add a time dimension
   unless the question asks for a trend/period breakdown — "最近7天各渠道订单数"
   means FILTER by time, group by channel only.
+- To filter on a measure value (e.g. "GMV超过100万的渠道"), put the MEASURE
+  path in filters with a comparison operator (gt/gte/lt/lte/equals/notEquals)
+  — it becomes an aggregate HAVING filter automatically. Never use string/date
+  operators (contains/startsWith/set/...) on measures.
 - Joins are automatic: any cube referenced by measures/dimensions is joined
   along declared relationships — no join config needed.
 - Relative dateRanges ("last 30 days") are supported; timezone default UTC.
