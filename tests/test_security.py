@@ -111,6 +111,8 @@ def _orders_cube() -> CubeMeta:
         "Orders",
         "SELECT * FROM orders",
         security_context={"check_permission": lambda ctx: [f"Orders.tenant_id = {ctx.tenant_id}"]},
+        # role convenience defaults only fire on cubes that declare these
+        security_columns=("user_id", "department"),
     )
     class _O:
         count = measure(None, MeasureType.COUNT)
@@ -138,7 +140,7 @@ def test_rls_viewer_and_manager_defaults() -> None:
 
 
 def test_rls_quotes_escaped_to_prevent_injection() -> None:
-    @cube("Orders", "SELECT * FROM orders")
+    @cube("Orders", "SELECT * FROM orders", security_columns=("department",))
     class _O2:
         count = measure(None, MeasureType.COUNT)
 
@@ -212,3 +214,21 @@ async def test_dep_accepts_valid_bearer() -> None:
         r = await ac.get("/whoami", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 200
     assert r.json() == {"role": "manager", "user_id": "u1"}
+
+
+def test_rls_defaults_skip_cubes_without_declared_columns() -> None:
+    """A cube without user_id/department must NOT get the role defaults
+    appended — live acceptance caught `dwdorders.user_id` crashing every
+    viewer query on the trade domain."""
+    @cube(
+        "TradeOrders",
+        "SELECT * FROM dwd_orders",
+        security_context={"check_permission": lambda ctx: [f"orders.tenant_id = {ctx.tenant_id}"]},
+        security_columns=("tenant_id",),
+    )
+    class _T:
+        count = measure(None, MeasureType.COUNT)
+
+    meta = registry.get("TradeOrders")
+    conds = PermissionBuilder.apply_row_level(meta, _ctx(role="viewer", user_id="u7", tenant_id="42"))
+    assert conds == ["orders.tenant_id = 42"]  # check_permission only, no default

@@ -266,7 +266,8 @@ class SQLBuilder:
         raise ValueError(f"unsupported window type {wtype!r}")  # pragma: no cover
 
     def _window_order_cols(self) -> str:
-        cols = [f'sub."{td.dimension}"' for td in self.query.timeDimensions]
+        # Only timeDimensions WITH granularity produce a sub column to order by.
+        cols = [f'sub."{td.dimension}"' for td in self.query.timeDimensions if td.granularity]
         cols += [f'sub."{p}"' for p in self.query.dimensions]
         if not cols:
             raise ValueError("window measures require a dimension or timeDimension to order by")
@@ -394,14 +395,19 @@ class SQLBuilder:
             cube, _kind, member = self._resolve_member(td.dimension)
             self._ensure_visible("dimension", member)
             col = member.sql
-            expr = f"date_trunc('{td.granularity}', {col})" if td.granularity else col
-            inner_select.append(f'{expr} AS "{td.dimension}"')
-            group_items.append(expr)
             if td.dateRange is not None:
                 start, end = resolve_date_range(td.dateRange, now=self.now, tz=self.query.timezone)
                 time_ranges.append(
                     f"{col} >= {self._params.bind(start)} AND {col} <= {self._params.bind(end)}"
                 )
+            if td.granularity is None:
+                # dateRange-only timeDimension: pure filter, no grouping column.
+                # Rendering it into SELECT/GROUP BY exploded "sum over last 30
+                # days" into per-timestamp detail rows (live acceptance catch).
+                continue
+            expr = f"date_trunc('{td.granularity}', {col})"
+            inner_select.append(f'{expr} AS "{td.dimension}"')
+            group_items.append(expr)
 
         where = self._collect_where(time_ranges)
         where_filters, having = self._split_filters()
@@ -428,7 +434,8 @@ class SQLBuilder:
         for path in self.query.dimensions:
             outer_select.append(f'sub."{path}" AS "{path}"')
         for td in self.query.timeDimensions:
-            outer_select.append(f'sub."{td.dimension}" AS "{td.dimension}"')
+            if td.granularity:  # dateRange-only tds have no sub column
+                outer_select.append(f'sub."{td.dimension}" AS "{td.dimension}"')
         for path, wtype, ref in window_specs:
             outer_select.append(f'{self._window_fn(wtype, ref, order_cols)} AS "{path}"')
 

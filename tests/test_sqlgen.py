@@ -683,3 +683,19 @@ def test_window_measure_filter_fails_closed() -> None:
                 "filters": [{"member": "Orders.cumulative", "operator": "gt", "values": [100]}],
             }
         )
+
+
+def test_time_dim_daterange_without_granularity_is_pure_filter() -> None:
+    """Live acceptance: `timeDimensions` with dateRange but NO granularity is a
+    time FILTER only — it must not add a SELECT/GROUP BY column (that exploded
+    "sum over last 30 days" into per-timestamp detail rows)."""
+    sql = _sql(
+        {
+            "measures": ["Orders.revenue"],
+            "timeDimensions": [{"dimension": "Orders.created_at", "dateRange": "last 30 days"}],
+        }
+    )
+    assert 'AS "Orders.created_at"' not in sql  # no grouping column
+    assert "GROUP BY" not in sql
+    assert "created_at >= '2026-07-08" in sql  # filter still applied
+    assert "created_at <= '2026-08-07" in sql

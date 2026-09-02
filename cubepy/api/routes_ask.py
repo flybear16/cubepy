@@ -177,9 +177,19 @@ def _normalize_filter_numbers(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _interpret(llm: ChatModel, rows: list[dict[str, Any]], question: str) -> str | None:
-    """LLM#2: one-line insight. Best-effort — degrades to None on any failure."""
+    """LLM#2: one-line insight. Best-effort — degrades to None on any failure.
+
+    When rows were truncated for the prompt, say so — the model must not
+    present a 20-row sample as the full population (live acceptance: it
+    answered "一共1230.8" over a 1893-row result).
+    """
     try:
         sample = json.dumps(rows[:20], ensure_ascii=False, default=str)
+        scope = (
+            f"（共 {len(rows)} 行，以下仅前 20 行样本；总量类结论必须说明是样本口径，不得当作全集）"
+            if len(rows) > 20
+            else "（以下为全部结果行）"
+        )
         reply = await llm.chat(
             [
                 {
@@ -187,7 +197,7 @@ async def _interpret(llm: ChatModel, rows: list[dict[str, Any]], question: str) 
                     "content": "你是数据解读助手。用一句中文总结下述查询结果对用户问题的回答，"
                     "直接给数字结论，不要复述数据，不要编造未出现的数字。",
                 },
-                {"role": "user", "content": f"问题：{question}\n结果（最多20行）：{sample}"},
+                {"role": "user", "content": f"问题：{question}\n结果{scope}：{sample}"},
             ]
         )
         return reply.strip() or None
@@ -273,7 +283,10 @@ async def ask(
     rows = env.get("data") or []
     latency_ms = round((time.perf_counter() - start) * 1000, 1)
 
-    if not rows:  # Empty path: a valid question with no matching rows.
+    # Empty path: no rows, or a single all-NULL row (grand-total aggregate over
+    # zero rows returns one NULL row, not an empty array — live acceptance).
+    is_empty = not rows or not any(v is not None for row in rows for v in row.values())
+    if is_empty:
         answer = "该条件下没有数据。试着放宽时间范围或过滤条件。"
     elif conf.ask_interpret:
         answer = await _interpret(llm, rows, question) or "查询完成，见 data。"

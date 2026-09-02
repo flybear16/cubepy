@@ -44,10 +44,14 @@ class PermissionBuilder:
             if isinstance(result, list):
                 conditions.extend(result)
 
-        # Role-based convenience defaults (docs/05). These are additive.
-        if ctx.role == "viewer":
+        # Role-based convenience defaults (docs/05). These are additive, but a
+        # default may only fire when the cube DECLARES the column it filters on
+        # (``security_columns``) — blindly appending `user_id =` to a cube
+        # without that column crashes every viewer query (caught live by the
+        # trade-domain acceptance run: `dwdorders.user_id` does not exist).
+        if ctx.role == "viewer" and "user_id" in cube.security_columns:
             conditions.append(f"{cube.name}.user_id = {sql_str(ctx.user_id)}")
-        elif ctx.role == "manager":
+        elif ctx.role == "manager" and "department" in cube.security_columns:
             conditions.append(f"{cube.name}.department = {sql_str(ctx.department)}")
 
         return conditions
