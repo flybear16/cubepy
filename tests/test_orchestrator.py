@@ -137,12 +137,12 @@ async def test_refresh_key_sql_probe_invalidates_on_change() -> None:
     query = Query.parse({"measures": ["Orders.revenue"]})
     ctx = _ctx()
 
-    await orch.load(query, ctx)            # miss -> exec (1), cache + probe sig1
-    await orch.load(query, ctx)            # probe unchanged -> cache hit
+    await orch.load(query, ctx)  # miss -> exec (1), cache + probe sig1
+    await orch.load(query, ctx)  # probe unchanged -> cache hit
     assert orch.executor.data_calls == 1  # type: ignore[attr-defined]
 
     orch.executor.probe_val = "v2"  # type: ignore[attr-defined]  # source data changed
-    await orch.load(query, ctx)            # probe changed -> invalidate -> re-exec
+    await orch.load(query, ctx)  # probe changed -> invalidate -> re-exec
     assert orch.executor.data_calls == 2  # type: ignore[attr-defined]
 
 
@@ -200,11 +200,7 @@ async def test_load_without_any_cube_refs_uses_default_ttl() -> None:
     # dimensions / timeDimensions -> None (and TTL falls back to the default).
     orch, exe = _orch([{"Orders.status": "x"}])
     query = Query.parse(
-        {
-            "filters": [
-                {"member": "Orders.status", "operator": "equals", "values": ["x"]}
-            ]
-        }
+        {"filters": [{"member": "Orders.status", "operator": "equals", "values": ["x"]}]}
     )
     env = await orch.load(query, _ctx())
     assert env["data"] == [{"Orders.status": "x"}]
@@ -236,14 +232,12 @@ async def test_refresh_key_probe_cached_between_loads() -> None:
             return [{"Orders.revenue": 100.0}]
 
     exe = _ProbeExecutor()
-    orch = QueryOrchestrator(
-        RedisCache(fakeredis.FakeAsyncRedis()), exe, settings=settings
-    )
+    orch = QueryOrchestrator(RedisCache(fakeredis.FakeAsyncRedis()), exe, settings=settings)
     query = Query.parse({"measures": ["Orders.revenue"]})
     ctx = _ctx()
 
-    await orch.load(query, ctx)   # probe executed + signature cached
-    await orch.load(query, ctx)   # probe served from cache -> query cache hit
+    await orch.load(query, ctx)  # probe executed + signature cached
+    await orch.load(query, ctx)  # probe served from cache -> query cache hit
     assert exe.probe_calls == 1
     assert exe.data_calls == 1
 
@@ -258,3 +252,55 @@ async def test_non_integer_refresh_every_falls_back_to_default_ttl() -> None:
     orch, exe = _orch([{"Orders.revenue": 1.0}])
     env = await orch.load(Query.parse({"measures": ["Orders.revenue"]}), _ctx())
     assert env["data"] == [{"Orders.revenue": 1.0}]
+
+
+# --- cache-key fingerprinting (live acceptance: stale hits across fixes) ------
+
+
+def test_cache_key_changes_when_schema_changes() -> None:
+    from cubepy.orchestrator.orchestrator import make_cache_key
+    from cubepy.schema.loader import cube, measure
+    from cubepy.schema.meta import MeasureType
+    from cubepy.security.context import SecurityContext
+
+    registry.clear()
+
+    @cube("Orders", "orders")
+    class _O:
+        revenue = measure("amount", MeasureType.SUM)
+
+    ctx = SecurityContext(role="admin", tenant_id="42")
+    q = Query.parse({"measures": ["Orders.revenue"]})
+    k1 = make_cache_key(q, ctx)
+
+    registry.clear()
+
+    @cube("Orders", "orders")  # same name, no members — declared surface changed
+    class _O2:
+        pass
+
+    assert make_cache_key(q, ctx) != k1
+
+
+def test_cache_key_prefixes_engine_and_schema_fingerprints() -> None:
+    from cubepy.orchestrator.orchestrator import (
+        engine_fingerprint,
+        make_cache_key,
+        schema_fingerprint,
+    )
+    from cubepy.schema.loader import cube, measure
+    from cubepy.schema.meta import MeasureType
+    from cubepy.security.context import SecurityContext
+
+    registry.clear()
+
+    @cube("Orders", "orders")
+    class _O:
+        revenue = measure("amount", MeasureType.SUM)
+
+    key = make_cache_key(
+        Query.parse({"measures": ["Orders.revenue"]}),
+        SecurityContext(role="admin", tenant_id="42"),
+    )
+    assert key.startswith(f"cubepy:q:{engine_fingerprint()}:{schema_fingerprint()}:")
+    assert engine_fingerprint() == engine_fingerprint()  # lru-stable in-process

@@ -1,16 +1,22 @@
 """QueryOrchestrator: cache lookup -> pre-agg route -> execute -> cache set.
 
 The cache key is scoped by the security context (tenant/user/role) so that
-row-level security is never shared across identities.
+row-level security is never shared across identities, and prefixed with an
+engine+schema fingerprint so behaviour or schema changes never serve stale
+cached results across deploys.
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib
+import inspect
 import json
 import logging
+from dataclasses import asdict
 from datetime import datetime
+from functools import lru_cache
 from typing import Any
 
 from sqlalchemy import text
@@ -20,12 +26,62 @@ from cubepy.config import Settings
 from cubepy.orchestrator.envelope import build_envelope
 from cubepy.orchestrator.executor import QueryExecutor
 from cubepy.orchestrator.preagg import router as preagg_router
+from cubepy.schema.registry import registry
 from cubepy.security.context import SecurityContext
 from cubepy.sqlgen.builder import SQLBuilder
 from cubepy.sqlgen.query import Query
 from cubepy.sqlgen.rollup import RollupBuilder
 
 logger = logging.getLogger("cubepy.orchestrator")
+
+# Modules whose behaviour is baked into cached results. Their SOURCE is part of
+# the cache-key fingerprint: change the code, and every cached result from the
+# old behaviour is unreachable (key prefix differs) — no stale hits across
+# deploys or dev iterations. Live-acceptance finding: a behaviour fix left old
+# results serving from cache for a full TTL.
+_FINGERPRINT_MODULES = (
+    "cubepy.sqlgen.builder",
+    "cubepy.sqlgen.operators",
+    "cubepy.sqlgen.date_range",
+    "cubepy.sqlgen.rollup",
+    "cubepy.sqlgen.query",
+    "cubepy.security.permissions",
+    "cubepy.orchestrator.preagg",
+)
+
+
+@lru_cache(maxsize=1)
+def engine_fingerprint() -> str:
+    """Stable-per-process hash of the query-path engine sources."""
+    h = hashlib.sha256()
+    for modname in _FINGERPRINT_MODULES:
+        module = importlib.import_module(modname)
+        source = inspect.getsource(module)
+        h.update(modname.encode())
+        h.update(source.encode())
+    return h.hexdigest()[:16]
+
+
+def schema_fingerprint() -> str:
+    """Hash of the declared schema surface (names, sql, member exprs).
+
+    Callbacks (check_permission/shown) are skipped — their source is part of
+    the engine fingerprint when they live in fingerprinted modules.
+    """
+    h = hashlib.sha256()
+
+    def _clean(obj: Any) -> Any:
+        if isinstance(obj, dict):
+            return {k: _clean(v) for k, v in obj.items() if not callable(v)}
+        if isinstance(obj, (list, tuple)):
+            return [_clean(v) for v in obj]
+        if callable(obj):
+            return f"<fn:{getattr(obj, '__name__', 'callback')}>"
+        return obj
+
+    for cube in registry.all():
+        h.update(json.dumps(_clean(asdict(cube)), sort_keys=True, default=str).encode())
+    return h.hexdigest()[:16]
 
 
 def make_cache_key(query: Query, ctx: SecurityContext) -> str:
@@ -35,10 +91,8 @@ def make_cache_key(query: Query, ctx: SecurityContext) -> str:
         "user_id": ctx.user_id,
         "role": ctx.role,
     }
-    digest = hashlib.sha256(
-        json.dumps(payload, sort_keys=True, default=str).encode()
-    ).hexdigest()
-    return f"cubepy:q:{digest}"
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+    return f"cubepy:q:{engine_fingerprint()}:{schema_fingerprint()}:{digest}"
 
 
 def _primary_cube_name(query: Query) -> str | None:
@@ -181,9 +235,7 @@ class QueryOrchestrator:
                 return str(cached_sig)
 
         rows = await self.executor.execute(text(probe_sql))
-        sig = hashlib.sha256(
-            json.dumps(rows, sort_keys=True, default=str).encode()
-        ).hexdigest()
+        sig = hashlib.sha256(json.dumps(rows, sort_keys=True, default=str).encode()).hexdigest()
         if update_window > 0:
             await self.cache.setex(probe_key, update_window, sig)
         return sig
