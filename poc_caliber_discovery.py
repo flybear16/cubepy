@@ -9,9 +9,11 @@
 """
 from __future__ import annotations
 
+import argparse
 import hashlib
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import sqlglot
 from sqlglot import exp
@@ -161,7 +163,8 @@ def corroborate(c: CaliberCandidate) -> float:
 
 # ---------------- P3 指纹聚类 + 三类发现 ----------------
 
-def analyze(cands: list[CaliberCandidate]):
+def analyze(cands: list[CaliberCandidate], registered: set[str] | None = None):
+    registered = registered if registered is not None else REGISTERED
     by_name, by_fp = {}, {}
     for c in cands:
         by_name.setdefault(c.name, []).append(c)
@@ -186,13 +189,33 @@ def analyze(cands: list[CaliberCandidate]):
         if len(names) > 1 and fp not in {g[1][0].fingerprint for g in duplicates}:
             atomic_dupes.append((names, group))
     for c in cands:
-        if c.name not in REGISTERED:
+        if c.name not in registered:
             orphans.append(c)
     return conflicts, duplicates, atomic_dupes, orphans
 
 
-def main():
-    cands = extract(CORPUS)
+def load_corpus_from_dir(d: Path) -> dict[str, str]:
+    """从目录递归读取 .sql 文件作为语料（零云权限路径）"""
+    corpus: dict[str, str] = {}
+    for f in sorted(d.rglob("*.sql")):
+        corpus[str(f.relative_to(d))] = f.read_text(encoding="utf-8", errors="replace")
+    return corpus
+
+
+def load_registered(path: Path) -> set[str]:
+    """已登记指标清单：每行一个指标名，# 开头为注释"""
+    names: set[str] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            names.add(line)
+    return names
+
+
+def main(corpus: dict[str, str] | None = None, registered: set[str] | None = None):
+    corpus = corpus if corpus is not None else CORPUS
+    registered = registered if registered is not None else set(REGISTERED)
+    cands = extract(corpus)
     for c in cands:
         c.parsed_name = parse_name(c.name)
     print(f"== P1 提取: {len(cands)} 个候选口径 ==\n")
@@ -201,7 +224,7 @@ def main():
         print(f"  {c.sink:42s} {c.agg:28s} dims={c.dims} filters={c.filters or '[]'} "
               f"原子={c.parsed_name['atomic']}-{c.parsed_name['period']} 置信={conf:.1f}")
 
-    conflicts, duplicates, atomic_dupes, orphans = analyze(cands)
+    conflicts, duplicates, atomic_dupes, orphans = analyze(cands, registered)
     print(f"\n== P3 发现 ==\n")
     print(f"❗ 口径冲突（同名不同指纹）: {len(conflicts)} 组")
     for name, group in conflicts:
@@ -220,4 +243,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    ap = argparse.ArgumentParser(description="存量指标口径发现 POC")
+    ap.add_argument("--dir", type=Path, help="含 .sql 语料的目录（递归扫描）；不填则跑内置样例")
+    ap.add_argument("--registered", type=Path, help="已登记指标清单文件（每行一个指标名，# 为注释）")
+    args = ap.parse_args()
+    corpus = load_corpus_from_dir(args.dir) if args.dir else None
+    if corpus is not None:
+        print(f"[语料] 从 {args.dir} 载入 {len(corpus)} 个 .sql 文件")
+    main(corpus, load_registered(args.registered) if args.registered else None)
