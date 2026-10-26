@@ -14,9 +14,12 @@ import importlib
 import inspect
 import json
 import logging
+import os
+from collections.abc import Callable
 from dataclasses import asdict
 from datetime import datetime
 from functools import lru_cache
+from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
 from sqlalchemy import text
@@ -38,7 +41,8 @@ logger = logging.getLogger("cubepy.orchestrator")
 # the cache-key fingerprint: change the code, and every cached result from the
 # old behaviour is unreachable (key prefix differs) — no stale hits across
 # deploys or dev iterations. Live-acceptance finding: a behaviour fix left old
-# results serving from cache for a full TTL.
+# results serving from cache for a full TTL. envelope.py shapes the CACHED
+# VALUE; orchestrator.py decides what gets cached — both belong here.
 _FINGERPRINT_MODULES = (
     "cubepy.sqlgen.builder",
     "cubepy.sqlgen.operators",
@@ -47,36 +51,73 @@ _FINGERPRINT_MODULES = (
     "cubepy.sqlgen.query",
     "cubepy.security.permissions",
     "cubepy.orchestrator.preagg",
+    "cubepy.orchestrator.envelope",
+    "cubepy.orchestrator.orchestrator",
 )
+
+# Library versions that can shift result semantics (param binding, query-model
+# parsing, driver type adaptation). Cheap insurance: upgrades invalidate too.
+_FINGERPRINT_PACKAGES = ("sqlalchemy", "pydantic", "asyncpg")
+
+
+def _source_text(module: Any) -> str:
+    """Source for fingerprinting, with a weak fallback when unreadable.
+
+    ``inspect.getsource`` needs the ``.py`` on disk — a pyc-only deployment
+    would otherwise crash on first request (live-tested). mtime+size is a
+    weaker signal but still separates most deploys.
+    """
+    try:
+        return inspect.getsource(module)
+    except (OSError, TypeError):
+        file = getattr(module, "__file__", None)
+        if file and os.path.exists(file):
+            st = os.stat(file)
+            return f"<nosource:{st.st_size}:{st.st_mtime_ns}>"
+        return "<nosource>"
 
 
 @lru_cache(maxsize=1)
 def engine_fingerprint() -> str:
-    """Stable-per-process hash of the query-path engine sources."""
+    """Stable-per-process hash of the query-path engine sources + lib versions."""
     h = hashlib.sha256()
     for modname in _FINGERPRINT_MODULES:
         module = importlib.import_module(modname)
-        source = inspect.getsource(module)
         h.update(modname.encode())
-        h.update(source.encode())
+        h.update(_source_text(module).encode())
+    for pkg in _FINGERPRINT_PACKAGES:
+        try:
+            h.update(f"{pkg}={version(pkg)}".encode())
+        except PackageNotFoundError:  # pragma: no cover - only in odd installs
+            h.update(f"{pkg}=<absent>".encode())
     return h.hexdigest()[:16]
 
 
-def schema_fingerprint() -> str:
-    """Hash of the declared schema surface (names, sql, member exprs).
+def _callback_tag(fn: Callable[..., Any]) -> str:
+    """Fingerprint tag for a schema callback.
 
-    Callbacks (check_permission/shown) are skipped — their source is part of
-    the engine fingerprint when they live in fingerprinted modules.
+    SOURCE hash when readable — a changed RLS/check_permission body MUST change
+    the fingerprint (live-tested: name placeholders made an RLS edit invisible
+    to the cache, serving old-permission results). Name fallback only when the
+    source is unreadable.
     """
+    try:
+        return "<fnsrc:" + hashlib.sha256(inspect.getsource(fn).encode()).hexdigest()[:12] + ">"
+    except (OSError, TypeError):
+        return f"<fn:{getattr(fn, '__name__', 'callback')}>"
+
+
+def schema_fingerprint() -> str:
+    """Hash of the declared schema surface (names, sql, member exprs, callbacks)."""
     h = hashlib.sha256()
 
     def _clean(obj: Any) -> Any:
         if isinstance(obj, dict):
-            return {k: _clean(v) for k, v in obj.items() if not callable(v)}
+            return {k: _clean(v) for k, v in obj.items()}
         if isinstance(obj, (list, tuple)):
             return [_clean(v) for v in obj]
         if callable(obj):
-            return f"<fn:{getattr(obj, '__name__', 'callback')}>"
+            return _callback_tag(obj)
         return obj
 
     for cube in registry.all():

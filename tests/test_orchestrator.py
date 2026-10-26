@@ -304,3 +304,57 @@ def test_cache_key_prefixes_engine_and_schema_fingerprints() -> None:
     )
     assert key.startswith(f"cubepy:q:{engine_fingerprint()}:{schema_fingerprint()}:")
     assert engine_fingerprint() == engine_fingerprint()  # lru-stable in-process
+
+
+def test_schema_fingerprint_changes_when_rls_callback_body_changes() -> None:
+    """Attack test (live): name-placeholder tags made an RLS callback body edit
+    invisible to the cache — old-permission results kept serving. The callback
+    SOURCE must be part of the fingerprint."""
+    from cubepy.orchestrator.orchestrator import schema_fingerprint
+    from cubepy.schema.loader import cube, measure
+    from cubepy.schema.meta import MeasureType
+
+    registry.clear()
+
+    @cube(
+        "Orders",
+        "orders",
+        security_context={"check_permission": lambda ctx: [f"orders.tenant_id = {ctx.tenant_id}"]},
+        security_columns=("tenant_id",),
+    )
+    class _A:
+        revenue = measure("amount", MeasureType.SUM)
+
+    fp1 = schema_fingerprint()
+    registry.clear()
+
+    @cube(
+        "Orders",
+        "orders",  # same declared surface, DIFFERENT RLS predicate
+        security_context={"check_permission": lambda ctx: [f"orders.dept = {ctx.department}"]},
+        security_columns=("tenant_id",),
+    )
+    class _B:
+        revenue = measure("amount", MeasureType.SUM)
+
+    assert schema_fingerprint() != fp1
+
+
+def test_engine_fingerprint_survives_unreadable_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Attack test: pyc-only deployment (no .py on disk) must not crash on
+    first request — fall back to a weak but stable fingerprint."""
+    import inspect as _inspect
+
+    from cubepy.orchestrator.orchestrator import engine_fingerprint
+
+    def boom(*a: object, **k: object) -> str:
+        raise OSError("source not available")
+
+    monkeypatch.setattr(_inspect, "getsource", boom)
+    engine_fingerprint.cache_clear()
+    try:
+        v1 = engine_fingerprint()  # must not raise
+        v2 = engine_fingerprint()
+        assert v1 and v1 == v2
+    finally:
+        engine_fingerprint.cache_clear()
