@@ -91,7 +91,7 @@ def test_ws_subscribe_first_push() -> None:
             )
             msg = ws.receive_json()
     assert msg["messageId"] == "1"
-    assert msg["data"] == [{"Orders.revenue": 42}]
+    assert msg["data"] == [{"Orders.revenue": "42"}]  # 数值线上形态=字符串（对齐 Cube.js）
     assert msg["annotation"]["measures"]["Orders.revenue"]["type"] == "sum"
 
 
@@ -117,8 +117,8 @@ def test_ws_pushes_only_on_change() -> None:
             )
             first = ws.receive_json()
             second = ws.receive_json()
-    assert first["data"] == [{"Orders.revenue": 1}]
-    assert second["data"] == [{"Orders.revenue": 2}]
+    assert first["data"] == [{"Orders.revenue": "1"}]
+    assert second["data"] == [{"Orders.revenue": "2"}]
 
 
 def test_ws_bad_query_sends_error() -> None:
@@ -216,4 +216,4 @@ def test_ws_resubscribe_same_id_cancels_previous() -> None:
                 )
                 msg = ws.receive_json()  # re-subscribing restarts the poll task
                 assert msg["messageId"] == "1"
-    assert msg["data"] == [{"Orders.revenue": 1}]
+    assert msg["data"] == [{"Orders.revenue": "1"}]

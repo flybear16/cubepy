@@ -71,10 +71,10 @@ async def test_load_status_aggregate_with_rls(
         {"measures": ["Orders.revenue", "Orders.count"], "dimensions": ["Orders.status"]},
     )
     # tenant 42 -> rows 1,2 (shipped 10+30) and 3 (pending 5); tenant-99 row excluded.
-    assert by_status["shipped"]["Orders.revenue"] == 40.0
-    assert by_status["shipped"]["Orders.count"] == 2
-    assert by_status["pending"]["Orders.revenue"] == 5.0
-    assert by_status["pending"]["Orders.count"] == 1
+    assert float(by_status["shipped"]["Orders.revenue"]) == 40.0  # 线上为全精度字符串
+    assert by_status["shipped"]["Orders.count"] == "2"  # 数值线上形态=字符串
+    assert float(by_status["pending"]["Orders.revenue"]) == 5.0
+    assert by_status["pending"]["Orders.count"] == "1"  # 数值线上形态=字符串
 
 
 async def test_load_time_dimension_range(client: tuple[AsyncClient, QueryOrchestrator]) -> None:
@@ -96,7 +96,7 @@ async def test_load_time_dimension_range(client: tuple[AsyncClient, QueryOrchest
     # Two distinct days (2026-08-01 and 2026-08-02), tz format is DB-dependent.
     assert len(by_day) == 2
     assert all(k.startswith(("2026-08-01", "2026-08-02")) for k in by_day)
-    assert sum(r["Orders.revenue"] for r in by_day.values()) == 40.0
+    assert sum(float(r["Orders.revenue"]) for r in by_day.values()) == 40.0
 
 
 async def test_load_join_users_country(client: tuple[AsyncClient, QueryOrchestrator]) -> None:
@@ -106,8 +106,8 @@ async def test_load_join_users_country(client: tuple[AsyncClient, QueryOrchestra
         "Users.country",
         {"measures": ["Orders.revenue"], "dimensions": ["Users.country"]},
     )
-    assert by_country["CN"]["Orders.revenue"] == 15.0  # rows 1 (10) + 3 (5)
-    assert by_country["JP"]["Orders.revenue"] == 30.0  # row 2
+    assert float(by_country["CN"]["Orders.revenue"]) == 15.0  # rows 1 (10) + 3 (5)
+    assert float(by_country["JP"]["Orders.revenue"]) == 30.0  # row 2
 
 
 async def test_load_calculated_measure(client: tuple[AsyncClient, QueryOrchestrator]) -> None:
@@ -117,8 +117,8 @@ async def test_load_calculated_measure(client: tuple[AsyncClient, QueryOrchestra
         "Orders.status",
         {"measures": ["Orders.avg_order_value"], "dimensions": ["Orders.status"]},
     )
-    assert by_status["shipped"]["Orders.avg_order_value"] == 20.0  # 40 / 2
-    assert by_status["pending"]["Orders.avg_order_value"] == 5.0  # 5 / 1
+    assert float(by_status["shipped"]["Orders.avg_order_value"]) == 20.0  # 40 / 2
+    assert float(by_status["pending"]["Orders.avg_order_value"]) == 5.0  # 5 / 1
 
 
 async def test_load_window_measure_cumulative(
@@ -142,7 +142,7 @@ async def test_load_window_measure_cumulative(
     )
     # tenant 42 daily revenue: 08-01=10, 08-02=30, 08-03=5 -> cumulative 10, 40, 45
     rows = sorted(by_day.values(), key=lambda r: r["Orders.created_at"])
-    assert [r["Orders.cumulative_revenue"] for r in rows] == [10.0, 40.0, 45.0]
+    assert [float(r["Orders.cumulative_revenue"]) for r in rows] == [10.0, 40.0, 45.0]
 
 
 async def test_rls_excludes_other_tenant(client: tuple[AsyncClient, QueryOrchestrator]) -> None:
@@ -153,7 +153,7 @@ async def test_rls_excludes_other_tenant(client: tuple[AsyncClient, QueryOrchest
         {"measures": ["Orders.revenue"], "dimensions": ["Orders.status"]},
         tenant=99,
     )
-    assert by_status["shipped"]["Orders.revenue"] == 100.0  # only row 4
+    assert float(by_status["shipped"]["Orders.revenue"]) == 100.0  # only row 4
 
 
 async def test_meta_and_sql(client: tuple[AsyncClient, QueryOrchestrator]) -> None:
@@ -207,7 +207,7 @@ async def test_load_compare_date_range(client: tuple[AsyncClient, QueryOrchestra
     assert r.status_code == 200, r.text
     data = r.json()["data"]
     assert len(data) == 2  # one envelope per range
-    totals = [sum(row["Orders.revenue"] for row in env["data"]) for env in data]
+    totals = [sum(float(row["Orders.revenue"]) for row in env["data"]) for env in data]
     assert totals == [10.0, 30.0]  # row1 / row2 (tenant 42)
 
 
@@ -220,8 +220,8 @@ async def test_graphql_dynamic_per_cube(client: tuple[AsyncClient, QueryOrchestr
     )
     assert r.status_code == 200, r.text
     by = {row["status"]: row["revenue"] for row in r.json()["data"]["orders"]}
-    assert by["shipped"] == 40.0
-    assert by["pending"] == 5.0
+    assert float(by["shipped"]) == 40.0
+    assert float(by["pending"]) == 5.0
 
 
 async def test_orchestrator_detects_db_change(
@@ -235,7 +235,7 @@ async def test_orchestrator_detects_db_change(
     ctx = SecurityContext(role="admin", tenant_id="42", user_id="u1")
 
     before = await orch.load(Query.parse(query_body), ctx, use_cache=False)
-    before_total = sum(r["Orders.revenue"] for r in before["data"])
+    before_total = sum(float(r["Orders.revenue"]) for r in before["data"])
 
     # Insert a new tenant-42 order via a fresh connection.
     engine = create_async_engine(pg_dsn)
@@ -251,7 +251,7 @@ async def test_orchestrator_detects_db_change(
         await engine.dispose()
 
     after = await orch.load(Query.parse(query_body), ctx, use_cache=False)
-    after_total = sum(r["Orders.revenue"] for r in after["data"])
+    after_total = sum(float(r["Orders.revenue"]) for r in after["data"])
     assert after_total == before_total + 7.0
 
 
@@ -273,5 +273,5 @@ async def test_load_measure_filter_having(
         },
     )
     assert set(by_status) == {"shipped"}
-    assert by_status["shipped"]["Orders.revenue"] == 40.0
-    assert by_status["shipped"]["Orders.count"] == 2
+    assert float(by_status["shipped"]["Orders.revenue"]) == 40.0  # 线上为全精度字符串
+    assert by_status["shipped"]["Orders.count"] == "2"  # 数值线上形态=字符串

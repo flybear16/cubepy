@@ -367,6 +367,9 @@ class SQLBuilder:
         if order_items:
             clauses = ", ".join(f'"{p}" {d.upper()}' for p, d in order_items)
             parts.append("ORDER BY " + clauses)
+        elif self.query.measures:
+            # Cube.js 默认序：无显式 order 时按首度量 DESC（/sql 端点实锤 ORDER BY 2 DESC）。
+            parts.append(f'ORDER BY "{self.query.measures[0]}" DESC')
         if self.query.limit is not None:
             parts.append(f"LIMIT {int(self.query.limit)}")
         if self.query.offset is not None:

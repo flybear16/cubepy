@@ -20,9 +20,13 @@ from sqlalchemy.sql.elements import TextClause
 
 
 def _json_safe(value: Any) -> Any:
-    """Coerce DB types into JSON-serialisable Python values (Decimal, dates)."""
+    """Coerce DB types into JSON-serialisable Python values (dates).
+
+    Decimal 保持原样：envelope 层统一按 Cube.js 线上契约转字符串
+    （str(Decimal) 保 PG 全精度；此前这里转 float 会丢精度且与对拍契约不符）。
+    """
     if isinstance(value, Decimal):
-        return float(value)
+        return value
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     return value

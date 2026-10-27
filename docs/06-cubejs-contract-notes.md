@@ -91,6 +91,14 @@ basePath = `/cubejs-api` (configurable). Auth via `Authorization: Bearer <jwt>`.
 | GET/POST | `/cubejs-api/v1/load` | `{query, queryType:'multi'|'regular', ...}` | `{data, annotation, sql?, usedPreAgregations, refreshKeyMatches, lastRefreshTime}` |
 | GET/POST | `/cubejs-api/v1/sql` | `{query}` | `{sql: [{sql, ...}]}` |
 | GET | `/cubejs-api/v1/meta` | — | `{cubes:[{name,measures[],dimensions[],segments[]}]}` |
+
+### Response envelope values（2026-10-28 #5/#6 对齐，双引擎逐值对拍验收）
+- 数值 measure → **字符串**（str(Decimal) 定点展开 `format(d,"f")`，禁科学计数法；int→str）——
+  Cube.js 驱动透传 PG 数值文本，防浮点精度丢失。executor 不再把 Decimal 压成 float。
+- 时间维度 → `'%Y-%m-%dT%H:%M:%S.mmm'`（UTC 无后缀，原始值与粒度桶同格式）；
+  带粒度回**双键**：`dim` + `dim.<granularity>`（同桶值）；时间类型成员当普通维度用同样格式化。
+- 默认排序：无显式 order 且有度量 → `ORDER BY 首度量 DESC`（gateway 实锤 ORDER BY 2 DESC）。
+- 落点：`orchestrator/envelope.py`（_present_rows/_numeric_wire/_time_wire）。
 | GET/POST | `/cubejs-api/v1/subscribe` | `{query, ...}` | long-poll variant (we implement WS instead) |
 | GET | `/readyz` | — | health |
 

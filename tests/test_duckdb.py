@@ -91,7 +91,7 @@ async def test_duckdb_load_aggregates_with_rls(tmp_path) -> None:
     by = {row["Orders.status"]: row for row in r.json()["data"]}
     # tenant 42: rows 1+2 shipped (10+30=40, count 2), row 3 pending (5); row 4 (tenant 99) excluded.
     assert by["shipped"]["Orders.revenue"] == 40.0
-    assert by["shipped"]["Orders.count"] == 2
+    assert by["shipped"]["Orders.count"] == "2"  # 数值线上形态=字符串
     assert by["pending"]["Orders.revenue"] == 5.0
 
 

@@ -61,7 +61,7 @@ async def test_cache_miss_then_hit() -> None:
     query = Query.parse({"measures": ["Orders.revenue", "Orders.count"]})
 
     r1 = await orch.load(query, _ctx())
-    assert r1["data"] == [{"Orders.revenue": 100, "Orders.count": 5}]
+    assert r1["data"] == [{"Orders.revenue": "100", "Orders.count": "5"}]
     assert exe.calls == 1
     assert r1["annotation"]["measures"]["Orders.revenue"]["type"] == "sum"
     assert r1["usedPreAggregations"] == []
@@ -192,7 +192,7 @@ async def test_load_with_only_time_dimension() -> None:
         Query.parse({"timeDimensions": [{"dimension": "Orders.created_at", "granularity": "day"}]}),
         _ctx(),
     )
-    assert env["data"] == [{"Orders.created_at": "2026-08-01T00:00:00"}]
+    assert env["data"] == [{"Orders.created_at": "2026-08-01T00:00:00.000", "Orders.created_at.day": "2026-08-01T00:00:00.000"}]
 
 
 async def test_load_without_any_cube_refs_uses_default_ttl() -> None:

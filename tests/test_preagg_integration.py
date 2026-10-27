@@ -63,13 +63,15 @@ async def _assert_tenant_isolation(orch: QueryOrchestrator) -> None:
     # Tenant 42: shipped 10+30=40, pending 5. Tenant 99's 100 must NOT appear.
     env42 = await orch.load(_QUERY, SecurityContext(role="admin", tenant_id="42"))
     by42 = {r["Orders.status"]: r["Orders.revenue"] for r in env42["data"]}
-    assert by42 == {"shipped": 40.0, "pending": 5.0}
+    # 值类型随引擎：PG numeric → 全精度字符串，DuckDB double → float（envelope float 通道）；
+    # 隔离语义用 float 归一断言。
+    assert {k: float(v) for k, v in by42.items()} == {"shipped": 40.0, "pending": 5.0}
     assert env42["usedPreAggregations"] == [{"tableName": "cubepy_rollup_orders_daily"}]
 
     # Tenant 99: shipped 100 only. Tenant 42's rows must NOT appear.
     env99 = await orch.load(_QUERY, SecurityContext(role="admin", tenant_id="99"))
     by99 = {r["Orders.status"]: r["Orders.revenue"] for r in env99["data"]}
-    assert by99 == {"shipped": 100.0}
+    assert {k: float(v) for k, v in by99.items()} == {"shipped": 100.0}
     assert env99["usedPreAggregations"] == [{"tableName": "cubepy_rollup_orders_daily"}]
 
 
