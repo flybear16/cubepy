@@ -136,6 +136,19 @@ Frame sequence:
 - `shown(authContext, cube) -> bool` on cube/measure/dimension/segment controls visibility — a
   hidden member is dropped from SELECT (and the cube itself hidden from `/meta` if cube-level false).
 - Auth: JWT (HS256 by default), decoded in middleware → `SecurityContext{user_id, role, dept, tenant_id}`.
+- **RLS fail-closed（2026-09-05 pyom 对接评估后新增）**：`check_permission` 回调拼片段前应调
+  `permissions.require_claims(ctx, *fields)`——缺 claim 抛 `ValueError` → API 400；否则空串
+  注入 WHERE（`tenant_id = ''`）会把未授权变成执行期 500。范式见 `samples/trade_schema.py`。
+
+## 8b. `/meta` member fields（2026-09-05 对齐 Cube.js）
+
+- Cube.js 的 `title` 是「cube 前缀 + 成员 title」的长标签，`shortTitle` 是**成员自身标签且恒存在**
+  （`CubeToMetaTransformer.title(_, _, short=true)`：`def.title || titleize(name)`）。
+- CubePy 对齐 shortTitle 语义：`shortTitle = short_title || title || name`（显式声明 > title 回退 >
+  name 兜底），member 声明新增 `short_title` 参数（decorator 与 YAML `shortTitle` 键均支持）；
+  `title` 维持 CubePy 既有语义（成员自身长标签，不加 cube 前缀）。
+- 下游消费者（py-om importer 的 `shortTitle || title || name` 回退链）依赖 shortTitle 恒存在——
+  缺失时资产名会降级成英文键名。
 
 ## 9. What CubePy will deliberately NOT replicate (this pass)
 - **Pre-aggregation** build/refresh/match — `PreAggRouter.match()` returns `None` + logs; the

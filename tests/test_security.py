@@ -232,3 +232,32 @@ def test_rls_defaults_skip_cubes_without_declared_columns() -> None:
     meta = registry.get("TradeOrders")
     conds = PermissionBuilder.apply_row_level(meta, _ctx(role="viewer", user_id="u7", tenant_id="42"))
     assert conds == ["orders.tenant_id = 42"]  # check_permission only, no default
+
+
+# --- require_claims（RLS fail-closed）-----------------------------------------
+
+
+def test_require_claims_passes_when_present() -> None:
+    from cubepy.security.permissions import require_claims
+
+    require_claims(_ctx(tenant_id="42"), "tenant_id")  # 不抛即通过
+
+
+def test_require_claims_rejects_empty() -> None:
+    from cubepy.security.permissions import require_claims
+
+    with pytest.raises(ValueError, match="tenant_id"):
+        require_claims(_ctx(), "tenant_id")
+
+
+def test_trade_schema_rls_fail_closed_on_missing_tenant() -> None:
+    """缺口修复回归：trade 域缺 tid claim 必须 400（ValueError），而非注入空串
+    让 SQL 执行期炸成 500（2026-09-05 pyom 对接评估发现的真机问题）。"""
+    from cubepy.samples.trade_schema import register_trade_schema
+
+    register_trade_schema()
+    meta = registry.get("DwdOrders")
+    with pytest.raises(ValueError, match="tenant_id"):
+        PermissionBuilder.apply_row_level(meta, _ctx(role="admin"))
+    conds = PermissionBuilder.apply_row_level(meta, _ctx(role="admin", tenant_id="42"))
+    assert conds == ["dwdorders.tenant_id = '42'"]

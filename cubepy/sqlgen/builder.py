@@ -100,31 +100,43 @@ class SQLBuilder:
         inner = measure.sql if measure.sql is not None else "*"
         t = measure.type
         if t == MeasureType.COUNT and measure.sql is None:
+            if measure.filters:
+                cond = " AND ".join(
+                    self._compile_filter(Filter.model_validate(f)) for f in measure.filters
+                )
+                # count(*) 不能套 CASE 子列；等价改写为对 1 计数（NULL 跳过）。
+                return f"count(CASE WHEN {cond} THEN 1 END)"
             return "count(*)"
-        if t == MeasureType.SUM:
-            agg = f"sum({inner})"
-        elif t == MeasureType.COUNT:
-            agg = f"count({inner})"
-        elif t == MeasureType.COUNT_DISTINCT:
-            agg = f"count(distinct {inner})"
-        elif t == MeasureType.COUNT_DISTINCT_APPROX:
-            # Requires the pg_hll extension on Postgres; faithful to cube.js.
-            agg = f"round(hll_cardinality(hll_add_agg(hll_hash_any({inner}))))"
-        elif t == MeasureType.AVG:
-            agg = f"avg({inner})"
-        elif t == MeasureType.MIN:
-            agg = f"min({inner})"
-        elif t == MeasureType.MAX:
-            agg = f"max({inner})"
-        else:  # pragma: no cover - exhaustive enum
-            raise ValueError(f"unsupported measure type {t!r}")
-
+        cond = None
         if measure.filters:
             cond = " AND ".join(
                 self._compile_filter(Filter.model_validate(f)) for f in measure.filters
             )
-            return f"sum(CASE WHEN {cond} THEN {inner} ELSE 0 END)"
-        return agg
+            # 带过滤的非 SUM 聚合：CASE 把不匹配行置 NULL，count/countDistinct/
+            # avg/min/max 各自跳过 NULL——语义正确。（此前无条件渲染
+            # sum(CASE…ELSE 0)，对 countDistinct 等是错的：会把过滤列当数值加总。
+            # 彩排对接 cube123 模型时发现并修复；SUM 保留 ELSE 0 见下。）
+            inner = f"CASE WHEN {cond} THEN {inner} END"
+        if t == MeasureType.SUM:
+            # SUM 过滤同样走 NULL 跳过（无 ELSE）——对齐真 Cube.js：
+            # 其 filtered sum 渲染为 sum(CASE WHEN <filter> THEN <sql> END)，
+            # 全不匹配组返回 NULL 而非 0（2026-09-05 双引擎对拍用 /sql 端点实锤）。
+            # base 与 rollup 复用本函数，两侧语义天然一致。
+            return f"sum({inner})"
+        if t == MeasureType.COUNT:
+            return f"count({inner})"
+        if t == MeasureType.COUNT_DISTINCT:
+            return f"count(distinct {inner})"
+        if t == MeasureType.COUNT_DISTINCT_APPROX:
+            # Requires the pg_hll extension on Postgres; faithful to cube.js.
+            return f"round(hll_cardinality(hll_add_agg(hll_hash_any({inner}))))"
+        if t == MeasureType.AVG:
+            return f"avg({inner})"
+        if t == MeasureType.MIN:
+            return f"min({inner})"
+        if t == MeasureType.MAX:
+            return f"max({inner})"
+        raise ValueError(f"unsupported measure type {t!r}")  # pragma: no cover - exhaustive
 
     def _calculated_sql(self, cube: CubeMeta, measure: Measure) -> str:
         """Inline a calculated measure's ``{name}`` refs with sibling aggregate SQL.

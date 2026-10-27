@@ -29,6 +29,24 @@ def sql_str(value: Any) -> str:
     return "'" + text.replace("'", "''") + "'"
 
 
+def require_claims(ctx: SecurityContext, *fields: str) -> None:
+    """RLS fail-closed helper: assert the named SecurityContext fields are non-empty.
+
+    RLS 回调在拼 SQL 片段前调用；任一字段为空即抛 ``ValueError`` → API 层转 400。
+    没有它，缺失的 claim 会以空串注入 WHERE（``tenant_id = ''``），把「未授权」
+    变成 SQL 执行期 500——语义错且泄漏内部错误细节。用法::
+
+        def _rls(ctx):
+            require_claims(ctx, "tenant_id")
+            return [f"dwdorders.tenant_id = {sql_str(ctx.tenant_id)}"]
+    """
+    missing = [f for f in fields if not getattr(ctx, f, "")]
+    if missing:
+        raise ValueError(
+            f"RLS 缺少必填 security claim：{', '.join(missing)}（租户隔离 fail-closed，缺失即拒绝）"
+        )
+
+
 def _visible(shown: Callable[[Any], bool] | None, ctx: SecurityContext) -> bool:
     return shown is None or bool(shown(ctx))
 

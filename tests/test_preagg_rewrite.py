@@ -51,7 +51,7 @@ def engine(tmp_path) -> object:
             'SELECT orders.status AS status, orders.tenant_id AS tenant_id, '
             "date_trunc('day', orders.created_at) AS created_at, "
             'sum(orders.amount) AS "revenue", count(*) AS "count", '
-            'sum(CASE WHEN orders.status = \'shipped\' THEN orders.amount ELSE 0 END) '
+            'sum(CASE WHEN orders.status = \'shipped\' THEN orders.amount END) '
             'AS "filtered_revenue" '
             "FROM orders AS orders GROUP BY orders.status, orders.tenant_id, "
             "date_trunc('day', orders.created_at)"

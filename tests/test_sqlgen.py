@@ -43,6 +43,16 @@ def _orders_users() -> Iterator[None]:
             MeasureType.SUM,
             filters=({"member": "Orders.status", "operator": "equals", "values": ["shipped"]},),
         )
+        filtered_users = measure(
+            "user_id",
+            MeasureType.COUNT_DISTINCT,
+            filters=({"member": "Orders.status", "operator": "equals", "values": ["shipped"]},),
+        )
+        filtered_cnt = measure(
+            "amount",
+            MeasureType.COUNT,
+            filters=({"member": "Orders.status", "operator": "equals", "values": ["shipped"]},),
+        )
         status = dimension("status", "string")
         created_at = dimension("created_at", "time")
 
@@ -323,8 +333,14 @@ def test_count_distinct_approx_sql_shape() -> None:
 
 
 def test_filtered_measure_uses_case_when() -> None:
+    """带过滤聚合按各自聚合函数渲染；CASE 置 NULL 由聚合跳过（对全部类型语义正确）。
+    回归：曾无条件渲染 sum(CASE…ELSE 0)，对 countDistinct/count 是错的。"""
     sql = _sql({"measures": ["Orders.filtered_revenue"]})
-    assert "sum(CASE WHEN status = 'shipped' THEN amount ELSE 0 END)" in sql
+    assert "sum(CASE WHEN status = 'shipped' THEN amount END)" in sql  # 对齐真 Cube.js（无 ELSE，空组 NULL）
+    sql2 = _sql({"measures": ["Orders.filtered_users"]})
+    assert "count(distinct CASE WHEN status = 'shipped' THEN user_id END)" in sql2
+    sql3 = _sql({"measures": ["Orders.filtered_cnt"]})
+    assert "count(CASE WHEN status = 'shipped' THEN amount END)" in sql3
 
 
 def test_unjoined_cube_raises() -> None:
