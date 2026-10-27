@@ -51,12 +51,16 @@ def _member_view(
     desc: str | None,
     fmt: str | None = None,
     drill_members: tuple[str, ...] = (),
+    short: str | None = None,
 ) -> dict[str, Any]:
     out: dict[str, Any] = {"name": name, "type": mtype}
     if sql is not None:
         out["sql"] = sql
     if title is not None:
         out["title"] = title
+    # Cube.js meta contract: shortTitle is the member's own label (no cube prefix)
+    # and is always present — derive from explicit short_title > title > name.
+    out["shortTitle"] = short or title or name
     if desc is not None:
         out["description"] = desc
     if fmt is not None:
@@ -167,14 +171,14 @@ async def meta(ctx: SecurityContext = Depends(security_context)) -> dict[str, An
                 "measures": [
                     _member_view(
                         m.name, m.sql, str(m.type), m.title, m.description,
-                        m.format, m.drill_members,
+                        m.format, m.drill_members, m.short_title,
                     )
                     for m in measures
                 ],
                 "dimensions": [
                     _member_view(
                         d.name, d.sql, str(d.type), d.title, d.description,
-                        d.format, d.drill_members,
+                        d.format, d.drill_members, d.short_title,
                     )
                     for d in dimensions
                 ],

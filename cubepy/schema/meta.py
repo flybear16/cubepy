@@ -52,13 +52,23 @@ class RelationshipType(StrEnum):
     HAS_MANY = "hasMany"
 
 
+# Column masking callback: (ctx) -> None | "fixed" | "partial" | "hash"
+# | ("fixed", "***") ...  None = show raw; str = named built-in; tuple adds a
+# parameter. Applied to RESULT VALUES in the envelope layer.
+MaskFn = Callable[[Any], "str | tuple[str, Any] | None"]
+
+
 @dataclass(frozen=True)
 class Measure:
     name: str
     sql: str | None
     type: MeasureType
     shown: ShownFn | None = None
+    mask: MaskFn | None = None
     title: str | None = None
+    # Short display title (Cube.js meta contract: shortTitle is the member's own
+    # label without cube prefix); derived from title when not declared explicitly.
+    short_title: str | None = None
     description: str | None = None
     # Inline filters for a filtered measure (member, operator, values); resolved to
     # a CASE/aggregate in the SQL generator (G005).
@@ -83,8 +93,11 @@ class Dimension:
     sql: str
     type: DimensionType
     shown: ShownFn | None = None
+    mask: MaskFn | None = None
     primary_key: bool = False
     title: str | None = None
+    # Same shortTitle semantics as Measure (member's own label, no cube prefix).
+    short_title: str | None = None
     description: str | None = None
     format: str | None = None
     drill_members: tuple[str, ...] = ()

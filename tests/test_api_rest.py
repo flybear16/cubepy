@@ -255,6 +255,26 @@ async def test_meta_surfaces_member_title_and_description() -> None:
     assert rev["description"] == "总营收"
 
 
+async def test_meta_short_title_contract() -> None:
+    """shortTitle 恒存在（Cube.js meta 契约）：显式 short_title > title > name。"""
+    registry.clear()
+
+    @cube("Orders", "orders")
+    class _O:
+        revenue = measure("amount", MeasureType.SUM, title="成交总额(GMV)", short_title="GMV")
+        count = measure(None, MeasureType.COUNT, title="订单数")
+        region = dimension("region", "string")
+
+    async with _client([]) as ac:
+        r = await ac.get("/cubejs-api/v1/meta", headers=_auth())
+    cubes = {c["name"]: c for c in r.json()["cubes"]}
+    members = {m["name"]: m for m in cubes["Orders"]["measures"]}
+    dims = {d["name"]: d for d in cubes["Orders"]["dimensions"]}
+    assert members["revenue"]["shortTitle"] == "GMV"  # 显式 short_title 优先
+    assert members["count"]["shortTitle"] == "订单数"  # title 回退
+    assert dims["region"]["shortTitle"] == "region"  # name 兜底（维度同样有 shortTitle）
+
+
 async def test_meta_skips_invisible_cube() -> None:
     registry.clear()
 

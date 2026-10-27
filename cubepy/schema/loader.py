@@ -62,7 +62,9 @@ def measure(
     mtype: MeasureType | str,
     *,
     shown: Any = None,
+    mask: Any = None,
     title: str | None = None,
+    short_title: str | None = None,
     description: str | None = None,
     filters: tuple[dict[str, Any], ...] = (),
     formula: str | None = None,
@@ -73,6 +75,10 @@ def measure(
 
     For a calculated measure pass ``mtype=MeasureType.CALCULATED`` and ``formula``
     (``sql`` may be None); the formula references sibling measures as ``{name}``.
+
+    ``mask`` is a column-masking callback ``(ctx) -> None | "fixed" | "partial"
+    | "hash" | ("fixed", "***")``; masked members stay queryable but their
+    RESULT VALUES are rewritten in the envelope (docs/06-contract extension).
     """
     mtype_v = mtype if isinstance(mtype, MeasureType) else MeasureType(mtype)
     return Measure(
@@ -80,7 +86,9 @@ def measure(
         sql=sql,
         type=mtype_v,
         shown=shown,
+        mask=mask,
         title=title,
+        short_title=short_title,
         description=description,
         filters=filters,
         formula=formula,
@@ -94,8 +102,10 @@ def dimension(
     dtype: DimensionType | str = DimensionType.STRING,
     *,
     shown: Any = None,
+    mask: Any = None,
     primary_key: bool = False,
     title: str | None = None,
+    short_title: str | None = None,
     description: str | None = None,
     format: str | None = None,
     drill_members: tuple[str, ...] = (),
@@ -106,8 +116,10 @@ def dimension(
         sql=sql,
         type=dtype_v,
         shown=shown,
+        mask=mask,
         primary_key=primary_key,
         title=title,
+        short_title=short_title,
         description=description,
         format=format,
         drill_members=drill_members,
@@ -192,6 +204,7 @@ def _parse_cube_dict(d: dict[str, Any]) -> CubeMeta:
             sql=m.get("sql"),
             type=MeasureType(m["type"]),
             title=m.get("title"),
+            short_title=m.get("shortTitle"),
             description=m.get("description"),
             format=m.get("format"),
             drill_members=tuple(m.get("drillMembers") or ()),
@@ -208,6 +221,7 @@ def _parse_cube_dict(d: dict[str, Any]) -> CubeMeta:
             type=DimensionType(dd["type"]),
             primary_key=dd.get("primaryKey", False),
             title=dd.get("title"),
+            short_title=dd.get("shortTitle"),
             description=dd.get("description"),
             format=dd.get("format"),
             drill_members=tuple(dd.get("drillMembers") or ()),
