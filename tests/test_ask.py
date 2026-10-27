@@ -267,7 +267,7 @@ async def test_ask_rls_isolates_tenant_on_real_pg(pg_client: AsyncClient) -> Non
     assert r.status_code == 200, r.text
     by_status = {row["Orders.status"]: row["Orders.revenue"] for row in r.json()["data"]}
     # tenant 42 only: shipped 40 + pending 5; tenant 99's 100 must NOT appear.
-    assert by_status == {"shipped": 40.0, "pending": 5.0}
+    assert by_status == {"shipped": "40.00", "pending": "5.00"}
 
 
 # --- LLM numeric-string normalisation (live HAVING check caught it) -----------
