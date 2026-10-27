@@ -18,6 +18,7 @@ bundled — wire your own (OpenAI, DashScope, …)::
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 
 from cubepy.schema.meta import CubeMeta
 from cubepy.schema.registry import SchemaRegistry
@@ -46,6 +47,7 @@ Rules:
 - Return ONLY the dimensions the question asks for. Do NOT add a time dimension
   unless the question asks for a trend/period breakdown — "最近7天各渠道订单数"
   means FILTER by time, group by channel only.
+- Members tagged [MASKED ...] remain fully queryable — the platform auto-redacts their VALUES for this user (e.g. "***"). Generate the query normally; never refuse just because a member is masked, and never narrate redacted values as real numbers.
 - To filter on a measure value (e.g. "GMV超过100万的渠道"), put the MEASURE
   path in filters with a comparison operator (gt/gte/lt/lte/equals/notEquals)
   — it becomes an aggregate HAVING filter automatically. Never use string/date
@@ -68,8 +70,16 @@ def _cubes(cubes: list[CubeMeta] | SchemaRegistry | None) -> list[CubeMeta]:
     return list(cubes)
 
 
-def build_context(cubes: list[CubeMeta] | SchemaRegistry | None = None) -> str:
-    """Compact markdown catalog of members + relationships for LLM prompts."""
+def build_context(
+    cubes: list[CubeMeta] | SchemaRegistry | None = None,
+    ctx: Any = None,
+) -> str:
+    """Compact markdown catalog of members + relationships for LLM prompts.
+
+    ``ctx`` enables per-caller annotation: members whose ``mask`` callback
+    fires for this caller get a "[MASKED for this user]" tag — the member stays
+    queryable, but the insight layer must not narrate redacted values as real.
+    """
     lines: list[str] = ["## Catalog"]
     for c in _cubes(cubes):
         lines.append(f"### {c.name}" + (f" — {c.description}" if c.description else ""))
@@ -77,13 +87,15 @@ def build_context(cubes: list[CubeMeta] | SchemaRegistry | None = None) -> str:
             if m.status == "deprecated":
                 continue
             extra = f" ({m.description})" if m.description else ""
-            lines.append(f"- measure: {c.name}.{m.name} [{m.type}]{extra}")
+            masked = "[MASKED for this user: queryable, values auto-redacted] " if ctx is not None and m.mask is not None and m.mask(ctx) else ""
+            lines.append(f"- measure: {c.name}.{m.name} [{m.type}]{extra} {masked}".rstrip())
         for d in c.dimensions:
             if d.status == "deprecated":
                 continue
             extra = f" ({d.description})" if d.description else ""
             pk = " primary key" if d.primary_key else ""
-            lines.append(f"- dimension: {c.name}.{d.name} [{d.type}]{pk}{extra}")
+            masked = "[MASKED for this user: queryable, values auto-redacted] " if ctx is not None and d.mask is not None and d.mask(ctx) else ""
+            lines.append(f"- dimension: {c.name}.{d.name} [{d.type}]{pk}{extra} {masked}".rstrip())
         for s in c.segments:
             lines.append(f"- segment: {c.name}.{s.name}")
         for tgt, j in c.joins.items():
@@ -111,12 +123,16 @@ def glossary_prompt(glossary: dict[str, str] | None = None) -> str:
 def system_prompt(
     cubes: list[CubeMeta] | SchemaRegistry | None = None,
     glossary: dict[str, str] | None = None,
+    ctx: Any = None,
 ) -> str:
     """Drop-in system prompt: date anchor + contract + catalog + glossary + example.
 
     The date anchor is load-bearing: without it the model resolves month-only
     references ("8月") against its training-cutoff year and the query silently
     returns empty (caught live by the M2 real-LLM acceptance run).
+
+    ``ctx`` threads through to the catalog so per-caller MASKED members are
+    annotated; the contract explains what the tag means for narration.
     """
     today = datetime.now(UTC).date().isoformat()
     parts = [
@@ -125,7 +141,7 @@ def system_prompt(
         'only time reference (e.g. "8月", "Q3") against THIS date\'s year, '
         'or prefer a relative dateRange ("this month", "last 30 days").',
         QUERY_CONTRACT,
-        build_context(cubes),
+        build_context(cubes, ctx=ctx),
         glossary_prompt(glossary),
         '\nExample — "每个客户的总销售额，按金额降序，前10":\n'
         '{"measures":["Orders.revenue"],"dimensions":["Customers.name"],'

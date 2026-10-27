@@ -48,7 +48,15 @@ def register_trade_schema() -> None:
     class _DwdOrders:
         gmv = measure("gmv", MeasureType.SUM, title="成交总额(GMV)")
         pay_amount = measure("pay_amount", MeasureType.SUM, title="支付金额")
-        refund_amount = measure("refund_amount", MeasureType.SUM, title="退款金额")
+        # 列级脱敏演示：退款金额对非 admin 角色打码——仍可查询、仍在 LLM
+        # 目录（带 [MASKED] 标注），只是结果值被替换；与 shown 的"彻底
+        # 不可见"互补
+        refund_amount = measure(
+            "refund_amount",
+            MeasureType.SUM,
+            title="退款金额",
+            mask=lambda ctx: None if ctx.role == "admin" else ("fixed", "[脱敏]"),
+        )
         order_cnt = measure(None, MeasureType.COUNT, title="订单数")
         aov = measure(
             None, MeasureType.CALCULATED, formula="{gmv} / NULLIF({order_cnt}, 0)",

@@ -220,7 +220,7 @@ async def ask(
     visible = _visible_cubes(ctx)
     allowed = set(members_index(visible))
     messages: list[dict[str, str]] = [
-        {"role": "system", "content": system_prompt(visible, glossary=_glossary(conf))},
+        {"role": "system", "content": system_prompt(visible, glossary=_glossary(conf), ctx=ctx)},
         {"role": "user", "content": question},
     ]
 

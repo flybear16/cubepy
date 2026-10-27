@@ -235,6 +235,7 @@ class QueryOrchestrator:
                 return build_envelope(
                     query,
                     rows,
+                    ctx=ctx,
                     now=now,
                     used_pre_aggregations=[{"tableName": route.table_name}],
                 )
@@ -248,7 +249,7 @@ class QueryOrchestrator:
                 )
         builder = SQLBuilder(query, ctx, now=now)
         rows = await self.executor.execute(builder.build())
-        return build_envelope(query, rows, now=now)
+        return build_envelope(query, rows, ctx=ctx, now=now)
 
     async def _probe_signature(self, cube_name: str | None) -> str | None:
         """refreshKey.sql probe: a short-TTL signature of source freshness.
